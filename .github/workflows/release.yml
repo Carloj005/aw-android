@@ -27,12 +27,26 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      - name: Decode release keystore (if configured in secrets)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+      - name: Accept Android SDK licenses
         shell: bash
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/release.jks"
-          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
+
+      - name: Decode release keystore (if configured in secrets)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 --decode > "$RUNNER_TEMP/release.jks"
+            test -s "$RUNNER_TEMP/release.jks"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "Release keystore decoded successfully."
+          else
+            echo "WARNING: KEYSTORE_BASE64 secret not set, falling back to debug signing."
+          fi
 
       - name: Grant gradlew execute permission
         run: chmod +x gradlew
@@ -44,10 +58,21 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew testDebugUnitTest assembleRelease --no-daemon
 
-      - name: Rename Release APK
+      - name: Verify APK signature & rename Release APK
+        shell: bash
         run: |
           TAG_NAME="${{ github.event.inputs.tag || github.ref_name }}"
-          cp app/build/outputs/apk/release/app-release.apk "AW-Anime-${TAG_NAME}.apk"
+          APK_SRC="app/build/outputs/apk/release/app-release.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.1.0/apksigner"
+          if [ -x "$APKSIGNER" ]; then
+            CERT_INFO="$("$APKSIGNER" verify --print-certs "$APK_SRC")"
+            echo "$CERT_INFO"
+            if [ -n "${KEYSTORE_FILE:-}" ] && echo "$CERT_INFO" | grep -q "CN=Android Debug"; then
+              echo "ERROR: APK was signed with debug key despite KEYSTORE_FILE being configured!"
+              exit 1
+            fi
+          fi
+          cp "$APK_SRC" "AW-Anime-${TAG_NAME}.apk"
           sha256sum "AW-Anime-${TAG_NAME}.apk" > "AW-Anime-${TAG_NAME}.apk.sha256"
 
       - name: Publish GitHub Release
