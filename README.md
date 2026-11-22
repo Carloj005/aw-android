@@ -2,6 +2,13 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.2.3 — PiP Nativo Completo & Zone Gesture Sicure
+- **Fix Picture-in-Picture (PiP)**:
+  - Il video **non si mette più in pausa** entrando in finestra flottante (pausa spostata correttamente su `ON_STOP` anziché `ON_PAUSE`).
+  - Aggiunti **controlli nativi direttamente nella finestra flottante PiP** (`-10s`, `Pausa / Riproduci`, `+10s`) con aggiornamento dinamico dell'icona e auto-PiP intelligente solo durante la riproduzione attiva.
+- **Zone gesture Luminosità / Volume ergonomiche**:
+  - Luminosità attiva solo nella fascia interna sinistra (`10%–35%` orizzontale, `18%–82%` verticale) e Volume solo nella fascia interna destra (`65%–90%` orizzontale, `18%–82%` verticale), lasciando liberi i bordi di sistema (tendina notifiche in alto, gesture Home/uscita in basso, gesture Indietro sui bordi esterni e area centrale neutra).
+
 ## Novità v1.2.2 — Motore Smart Skip Universale Multi-Sorgente
 - **Fix definitivo falsi "Salta Sigla" su qualsiasi anime** (es. Ep. 1 senza sigla come *Chainsaw Man*, *Solo Leveling*, *Frieren*, *Demon Slayer*, o falsi ED precoci):
   - Nuovo motore `SkipTimeValidator` con **validazione incrociata in parallelo** tra **VixCloud** (priorità 1, audio-fingerprinted), **AniSkip v2** (durata esatta + consenso globale) e **Anime-Skip GraphQL** (lookup esatto tramite `anilistId`).

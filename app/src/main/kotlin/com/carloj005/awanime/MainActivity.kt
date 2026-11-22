@@ -1,7 +1,14 @@
 package com.carloj005.awanime
 
+import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
+import android.graphics.drawable.Icon as AndroidIcon
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
@@ -12,6 +19,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,6 +63,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.ThemeMode
@@ -65,10 +74,14 @@ import com.carloj005.awanime.ui.screens.DetailScreen
 import com.carloj005.awanime.ui.screens.DownloadsScreen
 import com.carloj005.awanime.ui.screens.HistoryScreen
 import com.carloj005.awanime.ui.screens.HomeScreen
+import com.carloj005.awanime.ui.screens.PipCommand
 import com.carloj005.awanime.ui.screens.PlayerScreen
 import com.carloj005.awanime.ui.screens.SearchScreen
 import com.carloj005.awanime.ui.screens.SettingsScreen
 import com.carloj005.awanime.ui.theme.AWAnimeTheme
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 
 private enum class BottomTab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Rounded.Home),
@@ -79,22 +92,69 @@ private enum class BottomTab(val label: String, val icon: ImageVector) {
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        private const val ACTION_PIP_TOGGLE_PLAY = "com.carloj005.awanime.action.PIP_TOGGLE_PLAY"
+        private const val ACTION_PIP_REWIND = "com.carloj005.awanime.action.PIP_REWIND"
+        private const val ACTION_PIP_FORWARD = "com.carloj005.awanime.action.PIP_FORWARD"
+    }
+
     private val isInPipState = mutableStateOf(false)
+    private val _pipCommands = MutableSharedFlow<PipCommand>(extraBufferCapacity = 8)
+    val pipCommands: SharedFlow<PipCommand> = _pipCommands.asSharedFlow()
+
     @Volatile
     private var shouldAutoEnterPip: Boolean = false
+    @Volatile
+    private var playerCurrentlyPlaying: Boolean = true
 
-    fun enterPipIfSupported() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            runCatching {
-                val params = buildPipParams(autoEnter = shouldAutoEnterPip)
-                enterPictureInPictureMode(params)
+    private val pipActionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                ACTION_PIP_TOGGLE_PLAY -> _pipCommands.tryEmit(PipCommand.TOGGLE_PLAY)
+                ACTION_PIP_REWIND -> _pipCommands.tryEmit(PipCommand.REWIND_10)
+                ACTION_PIP_FORWARD -> _pipCommands.tryEmit(PipCommand.FORWARD_10)
             }
         }
     }
 
-    private fun buildPipParams(autoEnter: Boolean): PictureInPictureParams {
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun buildPipPendingIntent(action: String, requestCode: Int): PendingIntent {
+        val intent = Intent(action).setPackage(packageName)
+        return PendingIntent.getBroadcast(
+            this,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun buildPipParams(isPlaying: Boolean, autoEnter: Boolean): PictureInPictureParams {
+        val rewindAction = RemoteAction(
+            AndroidIcon.createWithResource(this, R.drawable.ic_pip_replay10),
+            "Indietro 10s",
+            "Indietro di 10 secondi",
+            buildPipPendingIntent(ACTION_PIP_REWIND, 101),
+        )
+        val playPauseAction = RemoteAction(
+            AndroidIcon.createWithResource(
+                this,
+                if (isPlaying) R.drawable.ic_pip_pause else R.drawable.ic_pip_play,
+            ),
+            if (isPlaying) "Pausa" else "Riproduci",
+            if (isPlaying) "Metti in pausa" else "Riprendi riproduzione",
+            buildPipPendingIntent(ACTION_PIP_TOGGLE_PLAY, 102),
+        )
+        val forwardAction = RemoteAction(
+            AndroidIcon.createWithResource(this, R.drawable.ic_pip_forward10),
+            "Avanti 10s",
+            "Avanti di 10 secondi",
+            buildPipPendingIntent(ACTION_PIP_FORWARD, 103),
+        )
+
         val builder = PictureInPictureParams.Builder()
             .setAspectRatio(Rational(16, 9))
+            .setActions(listOf(rewindAction, playPauseAction, forwardAction))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setAutoEnterEnabled(autoEnter)
             builder.setSeamlessResizeEnabled(true)
@@ -102,10 +162,25 @@ class MainActivity : ComponentActivity() {
         return builder.build()
     }
 
-    fun updateAutoPip(enabled: Boolean) {
-        shouldAutoEnterPip = enabled
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            runCatching { setPictureInPictureParams(buildPipParams(autoEnter = enabled)) }
+    fun enterPipIfSupported() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                enterPictureInPictureMode(
+                    buildPipParams(isPlaying = playerCurrentlyPlaying, autoEnter = shouldAutoEnterPip)
+                )
+            }
+        }
+    }
+
+    fun updatePipState(canAutoEnter: Boolean, isPlaying: Boolean) {
+        shouldAutoEnterPip = canAutoEnter
+        playerCurrentlyPlaying = isPlaying
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                setPictureInPictureParams(
+                    buildPipParams(isPlaying = isPlaying, autoEnter = canAutoEnter)
+                )
+            }
         }
     }
 
@@ -124,14 +199,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        val filter = IntentFilter().apply {
+            addAction(ACTION_PIP_TOGGLE_PLAY)
+            addAction(ACTION_PIP_REWIND)
+            addAction(ACTION_PIP_FORWARD)
+        }
+        ContextCompat.registerReceiver(this, pipActionReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+
         setContent {
             val vm: AppViewModel = viewModel()
             val settings by vm.settings.collectAsState()
             val activePlayer by vm.activePlayer.collectAsState()
             val isInPip by isInPipState
+            var isPlayerPlaying by rememberSaveable { mutableStateOf(true) }
 
-            LaunchedEffect(activePlayer, settings.autoPipEnabled) {
-                updateAutoPip(activePlayer != null && settings.autoPipEnabled)
+            LaunchedEffect(activePlayer, settings.autoPipEnabled, isPlayerPlaying) {
+                val canAuto = activePlayer != null && settings.autoPipEnabled && isPlayerPlaying
+                updatePipState(canAutoEnter = canAuto, isPlaying = isPlayerPlaying)
             }
 
             val isDark = when (settings.themeMode) {
@@ -162,10 +247,21 @@ class MainActivity : ComponentActivity() {
                 AwAnimeRoot(
                     vm = vm,
                     isInPipMode = isInPip,
+                    pipCommands = pipCommands,
+                    onPlayingStateChanged = { playing ->
+                        isPlayerPlaying = playing
+                        val canAuto = activePlayer != null && settings.autoPipEnabled && playing
+                        updatePipState(canAutoEnter = canAuto, isPlaying = playing)
+                    },
                     onEnterPip = { enterPipIfSupported() },
                 )
             }
         }
+    }
+
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(pipActionReceiver) }
+        super.onDestroy()
     }
 }
 
@@ -173,6 +269,8 @@ class MainActivity : ComponentActivity() {
 private fun AwAnimeRoot(
     vm: AppViewModel,
     isInPipMode: Boolean,
+    pipCommands: SharedFlow<PipCommand>,
+    onPlayingStateChanged: (Boolean) -> Unit,
     onEnterPip: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -245,6 +343,8 @@ private fun AwAnimeRoot(
             request = activePlayer!!,
             settings = settings,
             isInPipMode = isInPipMode,
+            pipCommands = pipCommands,
+            onPlayingStateChanged = onPlayingStateChanged,
             onEnterPip = onEnterPip,
             onClose = { vm.closePlayer() },
         )

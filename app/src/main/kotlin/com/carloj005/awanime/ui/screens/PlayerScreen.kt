@@ -127,6 +127,20 @@ import com.carloj005.awanime.ui.PlayerLaunchRequest
 import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.theme.BadgeGreen
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+
+enum class PipCommand {
+    TOGGLE_PLAY,
+    REWIND_10,
+    FORWARD_10,
+}
+
+private enum class VerticalGestureZone {
+    NONE,
+    BRIGHTNESS,
+    VOLUME,
+}
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -177,6 +191,8 @@ fun PlayerScreen(
     request: PlayerLaunchRequest,
     settings: AppSettings,
     isInPipMode: Boolean = false,
+    pipCommands: Flow<PipCommand> = emptyFlow(),
+    onPlayingStateChanged: (Boolean) -> Unit = {},
     onEnterPip: () -> Unit = {},
     onClose: () -> Unit,
 ) {
@@ -275,6 +291,16 @@ fun PlayerScreen(
         }
     }
 
+    // Ripristina fullscreen immersivo pulito al rientro dalla finestra PiP
+    LaunchedEffect(isInPipMode, activity) {
+        if (!isInPipMode) {
+            val insetsController = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+            insetsController?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     // Factory HTTP dinamica (aggiorna Referer/Origin in base al mirror VixCloud attivo)
     val httpDataSourceFactory = remember(client) {
         OkHttpDataSource.Factory(client.mediaOkHttpClient)
@@ -319,7 +345,7 @@ fun PlayerScreen(
     // State sempre aggiornati per evitare chiusure stantie nei DisposableEffect tra un episodio e l'altro
     val latestEpisode by rememberUpdatedState(currentEpisode)
     val latestDurationMs by rememberUpdatedState(durationMs)
-    val latestIsInPip by rememberUpdatedState(isInPipMode)
+    val latestOnPlayingChanged by rememberUpdatedState(onPlayingStateChanged)
 
     fun persistCurrentProgress(forceCompleted: Boolean = false) {
         val ep = latestEpisode
@@ -390,6 +416,7 @@ fun PlayerScreen(
 
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                latestOnPlayingChanged(playing)
                 if (!playing) persistCurrentProgress()
             }
 
@@ -427,17 +454,19 @@ fun PlayerScreen(
 
     DisposableEffect(exoPlayer) {
         onDispose {
+            latestOnPlayingChanged(false)
             persistCurrentProgress()
             exoPlayer.release()
         }
     }
 
-    // Auto-pausa su ON_PAUSE quando NON siamo in PiP e su ON_STOP sempre (es. chiusura finestra PiP)
+    // In PiP Android mette l'Activity in PAUSED ma NON in STOPPED:
+    // quindi salviamo il progresso su ON_PAUSE senza mettere in pausa, e mettiamo in pausa su ON_STOP
+    // (quando si chiude la finestra PiP sulla X, si spegne lo schermo o si esce senza PiP)!
     DisposableEffect(lifecycleOwner, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE && !latestIsInPip) {
+            if (event == Lifecycle.Event.ON_PAUSE) {
                 persistCurrentProgress()
-                exoPlayer.pause()
             } else if (event == Lifecycle.Event.ON_STOP) {
                 persistCurrentProgress()
                 exoPlayer.pause()
@@ -445,6 +474,28 @@ fun PlayerScreen(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Riceve i comandi dai pulsanti nativi della finestra flottante PiP (-10s / Play-Pausa / +10s)
+    LaunchedEffect(pipCommands, exoPlayer) {
+        pipCommands.collect { cmd ->
+            when (cmd) {
+                PipCommand.TOGGLE_PLAY -> {
+                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                }
+                PipCommand.REWIND_10 -> {
+                    val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                    exoPlayer.seekTo(target)
+                    positionMs = target
+                }
+                PipCommand.FORWARD_10 -> {
+                    val maxPos = if (latestDurationMs > 1_000L) latestDurationMs - 1_000L else Long.MAX_VALUE
+                    val target = (exoPlayer.currentPosition + 10_000L).coerceIn(0L, maxPos)
+                    exoPlayer.seekTo(target)
+                    positionMs = target
+                }
+            }
+        }
     }
 
     // Carica episodio + estrae timestamp VixCloud + fallback AniSkip asincrono
@@ -652,30 +703,47 @@ fun PlayerScreen(
                     },
                     onDoubleTap = { offset ->
                         if (!isInPipMode && !isScreenLocked && !episodeDrawerOpen) {
-                            if (offset.x < size.width / 2f) {
-                                seekBy(-10_000L, "-10s")
-                            } else {
-                                seekBy(10_000L, "+10s")
+                            when {
+                                offset.x < size.width * 0.38f -> seekBy(-10_000L, "-10s")
+                                offset.x > size.width * 0.62f -> seekBy(10_000L, "+10s")
                             }
                         }
                     },
                 )
             }
             .pointerInput(isScreenLocked, episodeDrawerOpen, isInPipMode) {
-                var isLeftSide = true
+                var activeZone = VerticalGestureZone.NONE
                 detectVerticalDragGestures(
                     onDragStart = { startOffset ->
-                        isLeftSide = startOffset.x < size.width / 2f
-                        if (!isLeftSide) {
-                            volumeFraction = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVolume.toFloat()
+                        val w = size.width.toFloat()
+                        val h = size.height.toFloat()
+                        // Fasce sicure interne: esclude bordi superiore (notifiche), inferiore (uscita app),
+                        // bordi laterali esterni (gesture Indietro) e fascia centrale neutra!
+                        val inSafeVerticalBand = startOffset.y in (h * 0.18f)..(h * 0.82f)
+                        activeZone = when {
+                            !inSafeVerticalBand -> VerticalGestureZone.NONE
+                            startOffset.x in (w * 0.10f)..(w * 0.35f) -> VerticalGestureZone.BRIGHTNESS
+                            startOffset.x in (w * 0.65f)..(w * 0.90f) -> {
+                                volumeFraction = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVolume.toFloat()
+                                VerticalGestureZone.VOLUME
+                            }
+                            else -> VerticalGestureZone.NONE
                         }
                     },
-                    onDragEnd = { activeGestureHud = null },
-                    onDragCancel = { activeGestureHud = null },
+                    onDragEnd = {
+                        activeZone = VerticalGestureZone.NONE
+                        activeGestureHud = null
+                    },
+                    onDragCancel = {
+                        activeZone = VerticalGestureZone.NONE
+                        activeGestureHud = null
+                    },
                     onVerticalDrag = { _, dragAmount ->
-                        if (isInPipMode || isScreenLocked || episodeDrawerOpen) return@detectVerticalDragGestures
+                        if (isInPipMode || isScreenLocked || episodeDrawerOpen || activeZone == VerticalGestureZone.NONE) {
+                            return@detectVerticalDragGestures
+                        }
                         val delta = -dragAmount / (size.height * 0.65f)
-                        if (isLeftSide) {
+                        if (activeZone == VerticalGestureZone.BRIGHTNESS) {
                             brightnessLevel = (brightnessLevel + delta).coerceIn(0.02f, 1.0f)
                             activity?.window?.let { win ->
                                 val attrs = win.attributes
@@ -683,7 +751,7 @@ fun PlayerScreen(
                                 win.attributes = attrs
                             }
                             activeGestureHud = true to brightnessLevel
-                        } else {
+                        } else if (activeZone == VerticalGestureZone.VOLUME) {
                             volumeFraction = (volumeFraction + delta).coerceIn(0f, 1f)
                             val targetVol = (volumeFraction * maxVolume).toInt().coerceIn(0, maxVolume)
                             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
