@@ -4,13 +4,51 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Sole nascente / luna dorata alle spalle del Torii -->
     <path
-        android:fillColor="#8B6BFF"
-        android:pathData="M54,22A32,32 0,1 1,53.99 22Z" />
+        android:fillColor="#FFB74D"
+        android:pathData="M54,37A21,21 0,1 1,53.99 37Z" />
     <path
-        android:fillColor="#141824"
-        android:pathData="M54,27A27,27 0,1 1,53.99 27Z" />
+        android:fillColor="#FF7043"
+        android:fillAlpha="0.35"
+        android:pathData="M54,41A17,17 0,1 1,53.99 41Z" />
+
+    <!-- Portale giapponese Torii stilizzato (vermiglio) -->
+    <!-- Trave superiore curva (Kasagi) -->
     <path
-        android:fillColor="#22D3EE"
-        android:pathData="M45,38L71,54L45,70Z" />
+        android:fillColor="#FF3B5C"
+        android:pathData="M24,31Q54,37 84,31L82,38Q54,43 26,38Z" />
+    <!-- Sotto-trave orizzontale (Nuki) -->
+    <path
+        android:fillColor="#E52D4F"
+        android:pathData="M30,44L78,44L78,49L30,49Z" />
+    <!-- Targa centrale (Gakuzuka) -->
+    <path
+        android:fillColor="#D41E40"
+        android:pathData="M51,38L57,38L57,45L51,45Z" />
+    <!-- Pilastro sinistro -->
+    <path
+        android:fillColor="#FF3B5C"
+        android:pathData="M35,38L41,38L40,77L33,77Z" />
+    <!-- Pilastro destro -->
+    <path
+        android:fillColor="#FF3B5C"
+        android:pathData="M67,38L73,38L75,77L68,77Z" />
+    <!-- Basi pilastri (Nemaki) -->
+    <path
+        android:fillColor="#1E1938"
+        android:pathData="M31.5,73L41.5,73L41.5,78L31.5,78Z" />
+    <path
+        android:fillColor="#1E1938"
+        android:pathData="M66.5,73L76.5,73L76.5,78L66.5,78Z" />
+
+    <!-- Simbolo Play luminoso al centro dell'arco Torii -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48.5,53.5L63.5,62.5L48.5,71.5Z" />
+
+    <!-- Piccolo scintillio anime (sparkle) in alto a destra -->
+    <path
+        android:fillColor="#FFF3C4"
+        android:pathData="M78,22L79.3,25.2L82.5,26.5L79.3,27.8L78,31L76.7,27.8L73.5,26.5L76.7,25.2Z" />
 </vector>

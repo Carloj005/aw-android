@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -19,21 +18,23 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,67 +45,81 @@ import com.carloj005.awanime.ui.HomeUiState
 import com.carloj005.awanime.ui.components.AnimePosterCard
 import com.carloj005.awanime.ui.components.ContinueWatchingCard
 import com.carloj005.awanime.ui.components.ErrorRetryBox
+import com.carloj005.awanime.ui.components.HeroCarouselSection
 import com.carloj005.awanime.ui.components.LoadingPlaceholderBox
-import com.carloj005.awanime.ui.theme.AccentCyan
-import com.carloj005.awanime.ui.theme.AccentViolet
-import com.carloj005.awanime.ui.theme.MidnightBg
-import com.carloj005.awanime.ui.theme.SurfaceElevated
-import com.carloj005.awanime.ui.theme.TextPrimary
-import com.carloj005.awanime.ui.theme.TextSecondary
 
 @Composable
 fun HomeScreen(
     state: HomeUiState,
     history: List<WatchHistoryEntry>,
+    hasUpdateAvailable: Boolean,
     onSelectFilter: (LatestFilter) -> Unit,
     onRefresh: () -> Unit,
-    onOpenSearch: () -> Unit,
+    onOpenSettings: () -> Unit,
     onAnimeClick: (AnimeItem) -> Unit,
+    onQuickWatch: (AnimeItem) -> Unit,
     onResumeHistory: (WatchHistoryEntry) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val cs = MaterialTheme.colorScheme
+
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MidnightBg),
+            .background(cs.background),
     ) {
-        // Top Brand Bar
+        // Material 3 Expressive Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = Icons.Rounded.PlayCircle,
-                contentDescription = null,
-                tint = AccentViolet,
-                modifier = Modifier.size(30.dp),
-            )
-            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(cs.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.PlayCircle,
+                    contentDescription = null,
+                    tint = cs.onPrimaryContainer,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "AW Anime",
-                    color = TextPrimary,
-                    fontSize = 20.sp,
+                    color = cs.onBackground,
+                    fontSize = 21.sp,
                     fontWeight = FontWeight.ExtraBold,
                 )
                 Text(
                     text = state.activeDomain,
-                    color = AccentCyan,
+                    color = cs.primary,
                     fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "Aggiorna", tint = TextSecondary)
+            FilledTonalIconButton(onClick = onRefresh) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "Aggiorna")
             }
-            IconButton(onClick = onOpenSearch) {
-                Icon(Icons.Rounded.Search, contentDescription = "Cerca", tint = TextPrimary)
+            Spacer(Modifier.width(6.dp))
+            FilledTonalIconButton(onClick = onOpenSettings) {
+                if (hasUpdateAvailable) {
+                    BadgedBox(badge = { Badge(containerColor = cs.error) }) {
+                        Icon(Icons.Rounded.Settings, contentDescription = "Impostazioni")
+                    }
+                } else {
+                    Icon(Icons.Rounded.Settings, contentDescription = "Impostazioni")
+                }
             }
         }
 
-        // Filter Chips (Tutti / SUB / ITA / Tendenze)
+        // Expressive Pill Filter Chips
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -121,14 +136,14 @@ fun HomeScreen(
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                         )
                     },
+                    shape = CircleShape,
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = AccentViolet,
-                        selectedLabelColor = Color.White,
-                        containerColor = SurfaceElevated,
-                        labelColor = TextSecondary,
+                        selectedContainerColor = cs.primaryContainer,
+                        selectedLabelColor = cs.onPrimaryContainer,
+                        containerColor = cs.surfaceContainer,
+                        labelColor = cs.onSurfaceVariant,
                     ),
                     border = null,
-                    shape = RoundedCornerShape(10.dp),
                 )
             }
         }
@@ -147,20 +162,32 @@ fun HomeScreen(
             else -> {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 28.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    // Sezione "Continua a guardare" se presente cronologia
+                    // Hero Carousel in evidenza nella tab "Tutti"
+                    if (state.selectedFilter == LatestFilter.ALL && state.heroCarousel.isNotEmpty()) {
+                        item(span = { GridItemSpan(2) }) {
+                            HeroCarouselSection(
+                                animes = state.heroCarousel,
+                                onWatchNow = onQuickWatch,
+                                onOpenDetail = onAnimeClick,
+                                modifier = Modifier.padding(bottom = 4.dp),
+                            )
+                        }
+                    }
+
+                    // Carosello "Continua a guardare"
                     if (history.isNotEmpty()) {
                         item(span = { GridItemSpan(2) }) {
-                            Column(modifier = Modifier.padding(bottom = 8.dp)) {
+                            Column(modifier = Modifier.padding(bottom = 6.dp)) {
                                 Text(
                                     text = "Continua a guardare",
-                                    color = TextPrimary,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
+                                    color = cs.onBackground,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.ExtraBold,
                                     modifier = Modifier.padding(bottom = 10.dp),
                                 )
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -185,9 +212,9 @@ fun HomeScreen(
                         }
                         Text(
                             text = headerText,
-                            color = TextPrimary,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
+                            color = cs.onBackground,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.ExtraBold,
                             modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
                         )
                     }

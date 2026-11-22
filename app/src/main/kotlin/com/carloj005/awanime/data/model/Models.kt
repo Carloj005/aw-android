@@ -11,6 +11,39 @@ enum class LatestFilter(val label: String) {
 }
 
 @Serializable
+enum class ThemeMode(val label: String) {
+    SYSTEM("Sistema"),
+    DARK("Scuro"),
+    LIGHT("Chiaro"),
+}
+
+@Serializable
+data class AppSettings(
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val dynamicColors: Boolean = true,
+    val autoSkipIntro: Boolean = false,
+    val autoSkipOutro: Boolean = false,
+    val autoCheckUpdates: Boolean = true,
+)
+
+@Serializable
+enum class SkipKind(val label: String) {
+    INTRO("Salta Sigla"),
+    OUTRO("Salta Outro"),
+    RECAP("Salta Riepilogo"),
+}
+
+@Serializable
+data class SkipSegment(
+    val kind: SkipKind,
+    val startMs: Long,
+    val endMs: Long,
+    val source: String = "vixcloud",
+) {
+    fun contains(positionMs: Long): Boolean = positionMs in startMs..(endMs - 800L).coerceAtLeast(startMs)
+}
+
+@Serializable
 data class AnimeItem(
     val id: String,
     val slug: String = "",
@@ -32,6 +65,7 @@ data class AnimeItem(
     val genres: List<String> = emptyList(),
     val studios: List<String> = emptyList(),
     val anilistId: Int = 0,
+    val malId: Int = 0,
     val isDub: Boolean = false,
     val audioLabel: String = "Giapponese",
     val releasedEpisodes: Int = 0,
@@ -69,6 +103,7 @@ data class StreamResolution(
     val downloadUrl: String?,
     val referer: String,
     val qualityLabel: String = "1080p",
+    val skipSegments: List<SkipSegment> = emptyList(),
 )
 
 @Serializable
@@ -140,6 +175,15 @@ data class DownloadEntry(
             else -> 0f
         }
 }
+
+data class UpdateInfo(
+    val versionName: String,
+    val tagName: String,
+    val changelog: String,
+    val downloadUrl: String,
+    val sizeBytes: Long,
+    val htmlUrl: String,
+)
 
 fun formatTimeMs(ms: Long): String {
     val totalSeconds = (ms / 1000L).coerceAtLeast(0L)

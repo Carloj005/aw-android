@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -32,6 +33,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -39,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -52,16 +55,9 @@ import com.carloj005.awanime.ui.SearchUiState
 import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.components.ErrorRetryBox
 import com.carloj005.awanime.ui.components.LoadingPlaceholderBox
-import com.carloj005.awanime.ui.theme.AccentViolet
 import com.carloj005.awanime.ui.theme.BadgeItaCoral
-import com.carloj005.awanime.ui.theme.BadgeSubCyan
-import com.carloj005.awanime.ui.theme.MidnightBg
+import com.carloj005.awanime.ui.theme.BadgeSubBlue
 import com.carloj005.awanime.ui.theme.StarAmber
-import com.carloj005.awanime.ui.theme.SurfaceDark
-import com.carloj005.awanime.ui.theme.SurfaceElevated
-import com.carloj005.awanime.ui.theme.TextMuted
-import com.carloj005.awanime.ui.theme.TextPrimary
-import com.carloj005.awanime.ui.theme.TextSecondary
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -73,17 +69,18 @@ fun SearchScreen(
     modifier: Modifier = Modifier,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
+    val cs = MaterialTheme.colorScheme
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MidnightBg)
+            .background(cs.background)
             .padding(top = 12.dp),
     ) {
         Text(
             text = "Cerca Anime",
-            color = TextPrimary,
-            fontSize = 22.sp,
+            color = cs.onBackground,
+            fontSize = 24.sp,
             fontWeight = FontWeight.ExtraBold,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
@@ -91,25 +88,25 @@ fun SearchScreen(
         OutlinedTextField(
             value = state.query,
             onValueChange = onQueryChange,
-            placeholder = { Text("Es. JoJo, Dragon Ball, Solo Leveling...", color = TextMuted) },
-            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = AccentViolet) },
+            placeholder = { Text("Es. JoJo, Dragon Ball, Solo Leveling...", color = cs.onSurfaceVariant) },
+            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = cs.primary) },
             trailingIcon = {
                 if (state.query.isNotEmpty()) {
                     IconButton(onClick = { onQueryChange("") }) {
-                        Icon(Icons.Rounded.Close, contentDescription = "Pulisci", tint = TextSecondary)
+                        Icon(Icons.Rounded.Close, contentDescription = "Pulisci", tint = cs.onSurfaceVariant)
                     }
                 }
             },
             singleLine = true,
-            shape = RoundedCornerShape(14.dp),
+            shape = CircleShape,
             colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = SurfaceElevated,
-                unfocusedContainerColor = SurfaceDark,
-                focusedBorderColor = AccentViolet,
-                unfocusedBorderColor = SurfaceElevated,
-                focusedTextColor = TextPrimary,
-                unfocusedTextColor = TextPrimary,
-                cursorColor = AccentViolet,
+                focusedContainerColor = cs.surfaceContainerHigh,
+                unfocusedContainerColor = cs.surfaceContainer,
+                focusedBorderColor = cs.primary,
+                unfocusedBorderColor = Color.Transparent,
+                focusedTextColor = cs.onSurface,
+                unfocusedTextColor = cs.onSurface,
+                cursorColor = cs.primary,
             ),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(
@@ -138,7 +135,7 @@ fun SearchScreen(
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         text = "Nessun risultato trovato per \"${state.query}\"",
-                        color = TextSecondary,
+                        color = cs.onSurfaceVariant,
                         fontSize = 15.sp,
                     )
                 }
@@ -149,7 +146,7 @@ fun SearchScreen(
                     if (state.recentQueries.isNotEmpty()) {
                         Text(
                             text = "Ricerche recenti",
-                            color = TextSecondary,
+                            color = cs.onSurfaceVariant,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(bottom = 8.dp),
@@ -164,37 +161,45 @@ fun SearchScreen(
                                         keyboard?.hide()
                                         onSearchSubmit(q)
                                     },
-                                    label = { Text(q, color = TextPrimary) },
+                                    label = { Text(q, color = cs.onSurface) },
                                     leadingIcon = {
                                         Icon(
                                             Icons.Rounded.History,
                                             contentDescription = null,
-                                            tint = AccentViolet,
+                                            tint = cs.primary,
                                             modifier = Modifier.size(16.dp),
                                         )
                                     },
-                                    colors = AssistChipDefaults.assistChipColors(containerColor = SurfaceElevated),
+                                    shape = CircleShape,
+                                    colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainerHigh),
                                     border = null,
                                 )
                             }
                         }
                         Spacer(Modifier.height(20.dp))
                     }
-                    Text(
-                        text = "Suggerimento: tollera anche errori di battitura (es. \"jojo steal ball run\") e ordina tutte le stagioni dalla prima all'ultima.",
-                        color = TextMuted,
-                        fontSize = 13.sp,
-                        lineHeight = 19.sp,
-                    )
+                    Card(
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerLow),
+                    ) {
+                        Text(
+                            text = "Suggerimento: la ricerca tollera anche errori di battitura (es. \"jojo steal ball run\") e ordina automaticamente tutte le stagioni dalla prima all'ultima.",
+                            color = cs.onSurfaceVariant,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp,
+                            modifier = Modifier.padding(16.dp),
+                        )
+                    }
                 }
             }
 
             else -> {
                 Text(
                     text = "${state.results.size} risultati trovati (in ordine cronologico)",
-                    color = TextSecondary,
+                    color = cs.onSurfaceVariant,
                     fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
                 )
                 LazyColumn(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -215,12 +220,13 @@ private fun SearchResultRow(
     anime: AnimeItem,
     onClick: () -> Unit,
 ) {
+    val cs = MaterialTheme.colorScheme
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cs.surfaceContainer),
     ) {
         Row(
             modifier = Modifier
@@ -235,14 +241,14 @@ private fun SearchResultRow(
                 modifier = Modifier
                     .width(74.dp)
                     .height(106.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(SurfaceElevated),
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(cs.surfaceContainerHigh),
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = anime.title,
-                    color = TextPrimary,
+                    color = cs.onSurface,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
@@ -255,17 +261,17 @@ private fun SearchResultRow(
                 ) {
                     BadgePill(
                         text = if (anime.isDub) "ITA" else anime.audioLabel.uppercase().take(3),
-                        backgroundColor = if (anime.isDub) BadgeItaCoral else BadgeSubCyan,
+                        backgroundColor = if (anime.isDub) BadgeItaCoral else BadgeSubBlue,
                     )
                     BadgePill(
                         text = anime.type,
-                        backgroundColor = SurfaceElevated,
-                        contentColor = TextSecondary,
+                        backgroundColor = cs.surfaceContainerHigh,
+                        contentColor = cs.onSurfaceVariant,
                     )
                     anime.year?.let { yr ->
                         Text(
                             text = if (anime.season.isNotBlank()) "${anime.season} $yr" else yr.toString(),
-                            color = TextSecondary,
+                            color = cs.onSurfaceVariant,
                             fontSize = 12.sp,
                         )
                     }
@@ -281,7 +287,7 @@ private fun SearchResultRow(
                         anime.releasedEpisodes > 0 -> "${anime.releasedEpisodes} ep"
                         else -> anime.status
                     }
-                    Text(text = epsStr, color = TextSecondary, fontSize = 12.sp)
+                    Text(text = epsStr, color = cs.onSurfaceVariant, fontSize = 12.sp)
 
                     anime.score?.let { sc ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -292,7 +298,7 @@ private fun SearchResultRow(
                                 modifier = Modifier.size(14.dp),
                             )
                             Spacer(Modifier.width(2.dp))
-                            Text(text = sc, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text(text = sc, color = cs.onSurface, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }

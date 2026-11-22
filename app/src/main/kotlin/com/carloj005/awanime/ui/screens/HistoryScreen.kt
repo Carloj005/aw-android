@@ -16,24 +16,24 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,17 +44,9 @@ import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.model.formatTimeMs
 import com.carloj005.awanime.ui.components.BadgePill
-import com.carloj005.awanime.ui.theme.AccentViolet
 import com.carloj005.awanime.ui.theme.BadgeGreen
 import com.carloj005.awanime.ui.theme.BadgeItaCoral
-import com.carloj005.awanime.ui.theme.BadgeSubCyan
-import com.carloj005.awanime.ui.theme.ErrorRed
-import com.carloj005.awanime.ui.theme.MidnightBg
-import com.carloj005.awanime.ui.theme.SurfaceDark
-import com.carloj005.awanime.ui.theme.SurfaceElevated
-import com.carloj005.awanime.ui.theme.TextMuted
-import com.carloj005.awanime.ui.theme.TextPrimary
-import com.carloj005.awanime.ui.theme.TextSecondary
+import com.carloj005.awanime.ui.theme.BadgeSubBlue
 
 @Composable
 fun HistoryScreen(
@@ -64,16 +56,17 @@ fun HistoryScreen(
     onRemove: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val cs = MaterialTheme.colorScheme
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MidnightBg)
+            .background(cs.background)
             .padding(top = 12.dp),
     ) {
         Text(
             text = "Cronologia",
-            color = TextPrimary,
-            fontSize = 22.sp,
+            color = cs.onBackground,
+            fontSize = 24.sp,
             fontWeight = FontWeight.ExtraBold,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
@@ -84,13 +77,13 @@ fun HistoryScreen(
                     Icon(
                         imageVector = Icons.Rounded.History,
                         contentDescription = null,
-                        tint = TextMuted,
-                        modifier = Modifier.size(56.dp),
+                        tint = cs.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.size(60.dp),
                     )
                     Spacer(Modifier.height(12.dp))
-                    Text("Nessun anime nella cronologia", color = TextSecondary, fontSize = 15.sp)
+                    Text("Nessun anime nella cronologia", color = cs.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
-                    Text("Gli episodi che guardi appariranno qui", color = TextMuted, fontSize = 13.sp)
+                    Text("Gli episodi che guardi appariranno qui", color = cs.onSurfaceVariant, fontSize = 13.sp)
                 }
             }
         } else {
@@ -119,17 +112,18 @@ private fun HistoryCard(
     onOpenDetail: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val cs = MaterialTheme.colorScheme
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onOpenDetail),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cs.surfaceContainer),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(10.dp),
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AsyncImage(
@@ -137,17 +131,17 @@ private fun HistoryCard(
                 contentDescription = entry.anime.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .width(72.dp)
-                    .height(104.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(SurfaceElevated),
+                    .width(74.dp)
+                    .height(106.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(cs.surfaceContainerHigh),
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = entry.anime.title,
-                        color = TextPrimary,
+                        color = cs.onSurface,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 2,
@@ -158,7 +152,7 @@ private fun HistoryCard(
                         Icon(
                             Icons.Rounded.DeleteOutline,
                             contentDescription = "Rimuovi",
-                            tint = ErrorRed.copy(alpha = 0.85f),
+                            tint = cs.error,
                             modifier = Modifier.size(20.dp),
                         )
                     }
@@ -169,7 +163,7 @@ private fun HistoryCard(
                 ) {
                     BadgePill(
                         text = if (entry.anime.isDub) "ITA" else "SUB",
-                        backgroundColor = if (entry.anime.isDub) BadgeItaCoral else BadgeSubCyan,
+                        backgroundColor = if (entry.anime.isDub) BadgeItaCoral else BadgeSubBlue,
                     )
                     val epLabel = if (entry.completed) {
                         "Ep. ${entry.currentEpisodeNum} completato"
@@ -177,7 +171,7 @@ private fun HistoryCard(
                         "Ep. ${entry.currentEpisodeNum} • ${formatTimeMs(entry.progressMs)}" +
                             if (entry.durationMs > 0L) " / ${formatTimeMs(entry.durationMs)}" else ""
                     }
-                    Text(text = epLabel, color = TextSecondary, fontSize = 12.sp)
+                    Text(text = epLabel, color = cs.onSurfaceVariant, fontSize = 12.sp)
                 }
                 Spacer(Modifier.height(8.dp))
                 LinearProgressIndicator(
@@ -185,17 +179,16 @@ private fun HistoryCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(5.dp)
-                        .clip(RoundedCornerShape(4.dp)),
-                    color = if (entry.completed) BadgeGreen else AccentViolet,
-                    trackColor = SurfaceElevated,
+                        .clip(CircleShape),
+                    color = if (entry.completed) BadgeGreen else cs.primary,
+                    trackColor = cs.surfaceContainerHigh,
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 Button(
                     onClick = onResume,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentViolet),
-                    modifier = Modifier.height(34.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    shape = CircleShape,
+                    modifier = Modifier.height(36.dp),
                 ) {
                     Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
@@ -203,7 +196,6 @@ private fun HistoryCard(
                         text = if (entry.completed) "Prossimo episodio" else "Riprendi",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White,
                     )
                 }
             }

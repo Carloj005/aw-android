@@ -5,6 +5,8 @@ import android.net.Uri
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.model.LatestFilter
+import com.carloj005.awanime.data.model.SkipKind
+import com.carloj005.awanime.data.model.SkipSegment
 import com.carloj005.awanime.data.model.StreamResolution
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -17,6 +19,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -114,6 +117,9 @@ class AnimeUnityClient(context: Context?) {
     @Volatile
     private var sessionReady: Boolean = false
 
+    @Volatile
+    private var cachedHeroCarousel: List<AnimeItem> = emptyList()
+
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .dns(dohDns)
         .cookieJar(cookieJar)
@@ -178,6 +184,13 @@ class AnimeUnityClient(context: Context?) {
                             prefs?.edit()?.putString(KEY_BASE_URL, finalOrigin)?.apply()
                             val page = extractInertiaPage(body)
                             inertiaVersion = page?.str("version").orEmpty()
+                            val carouselArr = page?.get("props")?.jsonObject?.get("carouselAnimes") as? JsonArray
+                            if (carouselArr != null) {
+                                cachedHeroCarousel = carouselArr.mapNotNull { el ->
+                                    val obj = el as? JsonObject ?: return@mapNotNull null
+                                    parseAnimeVariants(obj).firstOrNull()
+                                }
+                            }
                             sessionReady = true
                             return@withLock
                         }
@@ -250,6 +263,11 @@ class AnimeUnityClient(context: Context?) {
             val text = resp.body?.string().orEmpty()
             return json.parseToJsonElement(text)
         }
+    }
+
+    suspend fun getHomeCarousel(forceRefresh: Boolean = false): List<AnimeItem> = withContext(Dispatchers.IO) {
+        ensureSession(forceRefresh = forceRefresh)
+        cachedHeroCarousel
     }
 
     suspend fun getLatestEpisodes(filter: LatestFilter): List<AnimeItem> = withContext(Dispatchers.IO) {
@@ -504,12 +522,106 @@ class AnimeUnityClient(context: Context?) {
             throw IOException("Nessuno stream video disponibile per questo episodio")
         }
 
+        val skipSegments = extractVixCloudTimestamps(embedHtml)
+
         StreamResolution(
             candidates = candidates,
             downloadUrl = directUrl,
             referer = "https://vixcloud.cc/",
             qualityLabel = qualityLabel,
+            skipSegments = skipSegments,
         )
+    }
+
+    /**
+     * Estrae i timestamp reali di Intro / Outro direttamente dall'HTML embed di VixCloud
+     * (`timestamps: [{"kind":"intro","start_time":59.9,"end_time":147.9,...}, ...]`).
+     */
+    internal fun extractVixCloudTimestamps(embedHtml: String): List<SkipSegment> {
+        val m = Regex("""\btimestamps\s*:\s*(\[[^\]]*\])""", RegexOption.DOT_MATCHES_ALL).find(embedHtml)
+            ?: return emptyList()
+        val arr = runCatching { json.parseToJsonElement(m.groupValues[1]).jsonArray }.getOrNull()
+            ?: return emptyList()
+        val segments = mutableListOf<SkipSegment>()
+        for (el in arr) {
+            val obj = el as? JsonObject ?: continue
+            val kindStr = obj.str("kind")?.lowercase() ?: continue
+            val kind = when (kindStr) {
+                "intro", "op", "opening" -> SkipKind.INTRO
+                "outro", "ed", "ending" -> SkipKind.OUTRO
+                "recap" -> SkipKind.RECAP
+                else -> continue
+            }
+            val startSec = obj.doubleVal("start_time") ?: continue
+            val endSec = obj.doubleVal("end_time") ?: continue
+            val startMs = (startSec * 1000.0).toLong().coerceAtLeast(0L)
+            val endMs = (endSec * 1000.0).toLong()
+            if (endMs > startMs + 3_000L) {
+                segments.add(
+                    SkipSegment(
+                        kind = kind,
+                        startMs = startMs,
+                        endMs = endMs,
+                        source = "vixcloud",
+                    )
+                )
+            }
+        }
+        return segments.sortedBy { it.startMs }
+    }
+
+    /**
+     * Fallback via AniSkip API v2 usando `malId` quando VixCloud non espone timestamp rilevati.
+     */
+    suspend fun fetchAniSkipSegments(
+        malId: Int,
+        episodeNum: String,
+        episodeLengthSeconds: Int = 0,
+    ): List<SkipSegment> = withContext(Dispatchers.IO) {
+        if (malId <= 0) return@withContext emptyList()
+        val epInt = episodeNum.trim().split(".", "-").firstOrNull()?.toIntOrNull()
+            ?: return@withContext emptyList()
+        if (epInt <= 0) return@withContext emptyList()
+
+        try {
+            val lenQuery = if (episodeLengthSeconds > 0) "&episodeLength=$episodeLengthSeconds" else "&episodeLength=0"
+            val url = "https://api.aniskip.com/v2/skip-times/$malId/$epInt?types=op&types=ed&types=recap$lenQuery"
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json")
+                .build()
+            val fastClient = okHttpClient.newBuilder()
+                .connectTimeout(4, TimeUnit.SECONDS)
+                .readTimeout(4, TimeUnit.SECONDS)
+                .build()
+            fastClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                if (root.boolVal("found") != true) return@withContext emptyList()
+                val results = root["results"] as? JsonArray ?: return@withContext emptyList()
+                val list = mutableListOf<SkipSegment>()
+                for (el in results) {
+                    val obj = el as? JsonObject ?: continue
+                    val skipType = obj.str("skipType")?.lowercase() ?: continue
+                    val kind = when (skipType) {
+                        "op", "mixed-op" -> SkipKind.INTRO
+                        "ed", "mixed-ed" -> SkipKind.OUTRO
+                        "recap" -> SkipKind.RECAP
+                        else -> continue
+                    }
+                    val interval = obj["interval"] as? JsonObject ?: continue
+                    val startMs = ((interval.doubleVal("startTime") ?: continue) * 1000.0).toLong().coerceAtLeast(0L)
+                    val endMs = ((interval.doubleVal("endTime") ?: continue) * 1000.0).toLong()
+                    if (endMs > startMs + 3_000L) {
+                        list.add(SkipSegment(kind = kind, startMs = startMs, endMs = endMs, source = "aniskip"))
+                    }
+                }
+                list.sortedBy { it.startMs }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     suspend fun resolveDirectDownloadUrl(animeId: String, videoId: String): String = withContext(Dispatchers.IO) {
@@ -732,6 +844,7 @@ class AnimeUnityClient(context: Context?) {
             genres = genres,
             studios = studios,
             anilistId = obj.intVal("anilist_id") ?: 0,
+            malId = obj.intVal("mal_id") ?: 0,
             isDub = forceDub,
             audioLabel = if (forceDub) "Italiano" else (LANGUAGE_LABELS[variantLang] ?: variantLang.uppercase()),
             releasedEpisodes = releasedCount,
@@ -761,5 +874,10 @@ class AnimeUnityClient(context: Context?) {
     private fun JsonObject.boolVal(key: String): Boolean? {
         val el = this[key] as? JsonPrimitive ?: return null
         return el.booleanOrNull
+    }
+
+    private fun JsonObject.doubleVal(key: String): Double? {
+        val el = this[key] as? JsonPrimitive ?: return null
+        return el.doubleOrNull ?: el.content.toDoubleOrNull()
     }
 }

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Layer monocromatico dedicato alle "Icone a tema" di Android 13+ (Material You) -->
+    <!-- Trave superiore curva del Torii (Kasagi) -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M24,31Q54,37 84,31L82,38Q54,43 26,38Z" />
+    <!-- Sotto-trave orizzontale (Nuki) -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M30,44L78,44L78,49L30,49Z" />
+    <!-- Targa centrale (Gakuzuka) -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M51,38L57,38L57,45L51,45Z" />
+    <!-- Pilastro sinistro -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M35,38L41,38L40,77L33,77Z" />
+    <!-- Pilastro destro -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M67,38L73,38L75,77L68,77Z" />
+    <!-- Simbolo Play centrato dentro il portale Torii -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M48.5,53.5L63.5,62.5L48.5,71.5Z" />
+    <!-- Scintillio anime -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M78,22L79.3,25.2L82.5,26.5L79.3,27.8L78,31L76.7,27.8L73.5,26.5L76.7,25.2Z" />
+</vector>

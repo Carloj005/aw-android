@@ -6,6 +6,8 @@ import coil.ImageLoaderFactory
 import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.data.storage.DownloadRepository
 import com.carloj005.awanime.data.storage.HistoryRepository
+import com.carloj005.awanime.data.storage.SettingsRepository
+import com.carloj005.awanime.data.update.AppUpdater
 
 class AwAnimeApp : Application(), ImageLoaderFactory {
 
@@ -18,12 +20,20 @@ class AwAnimeApp : Application(), ImageLoaderFactory {
     lateinit var downloadRepository: DownloadRepository
         private set
 
+    lateinit var settingsRepository: SettingsRepository
+        private set
+
+    lateinit var appUpdater: AppUpdater
+        private set
+
     override fun onCreate() {
         super.onCreate()
         instance = this
         animeUnityClient = AnimeUnityClient(applicationContext)
         historyRepository = HistoryRepository(applicationContext)
         downloadRepository = DownloadRepository(applicationContext, animeUnityClient)
+        settingsRepository = SettingsRepository(applicationContext)
+        appUpdater = AppUpdater(applicationContext)
     }
 
     override fun newImageLoader(): ImageLoader {

@@ -1,9 +1,11 @@
 package com.carloj005.awanime
 
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.SkipKind
 import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.data.network.DohFallbackDns
 import com.carloj005.awanime.data.network.SearchUtils
+import com.carloj005.awanime.data.update.AppUpdater
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
@@ -61,7 +63,7 @@ class SearchUtilsAndClientTest {
     }
 
     @Test
-    fun animeUnityClient_expandsSubAndItaVariantsWithSeparateCounts() {
+    fun animeUnityClient_expandsSubAndItaVariantsWithMalId() {
         val sample = Json.parseToJsonElement(
             """
             {
@@ -71,6 +73,7 @@ class SearchUtilsAndClientTest {
               "type": "tv",
               "season": "fall",
               "year": 2026,
+              "mal_id": 61967,
               "default_status": "ongoing",
               "variants": [
                 {"language": "ita", "status": "ongoing", "episodes_count": 5},
@@ -84,12 +87,45 @@ class SearchUtilsAndClientTest {
         val expanded = client.parseAnimeVariants(sample)
         assertEquals(2, expanded.size)
         assertEquals("Black Clover 2", expanded[0].title)
+        assertEquals(61967, expanded[0].malId)
         assertFalse(expanded[0].isDub)
         assertEquals(8, expanded[0].releasedEpisodes)
 
         assertEquals("Black Clover 2 (ITA)", expanded[1].title)
         assertTrue(expanded[1].isDub)
         assertEquals(5, expanded[1].releasedEpisodes)
+    }
+
+    @Test
+    fun extractVixCloudTimestamps_parsesRealIntroAndOutroSegments() {
+        val embedHtml = """
+            <script>
+            window.video = { id: 307688 };
+            timestamps: [{"kind":"intro","start_time":59.907482993197,"end_time":147.9074829932,"source":"detected","confidence":156.8125},{"kind":"outro","start_time":1336.029,"end_time":1420.029,"source":"detected","confidence":99.1}]
+            </script>
+        """.trimIndent()
+
+        val client = AnimeUnityClient(context = null)
+        val segments = client.extractVixCloudTimestamps(embedHtml)
+        assertEquals(2, segments.size)
+        assertEquals(SkipKind.INTRO, segments[0].kind)
+        assertEquals(59_907L, segments[0].startMs)
+        assertEquals(147_907L, segments[0].endMs)
+        assertTrue(segments[0].contains(90_000L))
+        assertFalse(segments[0].contains(20_000L))
+
+        assertEquals(SkipKind.OUTRO, segments[1].kind)
+        assertEquals(1_336_029L, segments[1].startMs)
+        assertTrue(segments[1].contains(1_380_000L))
+    }
+
+    @Test
+    fun appUpdater_comparesSemanticVersionsAccurately() {
+        assertTrue(AppUpdater.isNewerVersion("v1.2.0", "1.1.0"))
+        assertTrue(AppUpdater.isNewerVersion("2.0.0", "1.9.9"))
+        assertTrue(AppUpdater.isNewerVersion("1.1.1", "1.1.0"))
+        assertFalse(AppUpdater.isNewerVersion("1.1.0", "1.1.0"))
+        assertFalse(AppUpdater.isNewerVersion("v1.0.9", "1.1.0"))
     }
 
     @Test

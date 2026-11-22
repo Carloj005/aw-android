@@ -30,13 +30,18 @@ import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -65,18 +70,10 @@ import com.carloj005.awanime.data.model.formatTimeMs
 import com.carloj005.awanime.ui.DetailUiState
 import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.components.ErrorRetryBox
-import com.carloj005.awanime.ui.theme.AccentCyan
-import com.carloj005.awanime.ui.theme.AccentViolet
 import com.carloj005.awanime.ui.theme.BadgeGreen
 import com.carloj005.awanime.ui.theme.BadgeItaCoral
-import com.carloj005.awanime.ui.theme.BadgeSubCyan
-import com.carloj005.awanime.ui.theme.MidnightBg
+import com.carloj005.awanime.ui.theme.BadgeSubBlue
 import com.carloj005.awanime.ui.theme.StarAmber
-import com.carloj005.awanime.ui.theme.SurfaceDark
-import com.carloj005.awanime.ui.theme.SurfaceElevated
-import com.carloj005.awanime.ui.theme.TextMuted
-import com.carloj005.awanime.ui.theme.TextPrimary
-import com.carloj005.awanime.ui.theme.TextSecondary
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -92,6 +89,7 @@ fun DetailScreen(
     modifier: Modifier = Modifier,
 ) {
     val anime = state.anime ?: return
+    val cs = MaterialTheme.colorScheme
     var plotExpanded by remember(anime.uniqueKey) { mutableStateOf(false) }
     var selectedRangeIndex by remember(anime.uniqueKey) { mutableIntStateOf(0) }
 
@@ -109,7 +107,6 @@ fun DetailScreen(
             .associateBy { it.episodeNum }
     }
 
-    // Calcola episodio consigliato per il pulsante principale "Guarda / Riprendi"
     val primaryEpisodeIndex = remember(state.episodes, historyEntry) {
         if (state.episodes.isEmpty()) {
             0
@@ -128,18 +125,18 @@ fun DetailScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MidnightBg),
+            .background(cs.background),
     ) {
         LazyColumn(
-            contentPadding = PaddingValues(bottom = 32.dp),
+            contentPadding = PaddingValues(bottom = 36.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            // Hero Banner + Poster + Info principali
+            // Hero Banner + Poster + Metadati
             item {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(270.dp),
+                        .height(290.dp),
                 ) {
                     AsyncImage(
                         model = anime.displayBannerUrl,
@@ -153,22 +150,21 @@ fun DetailScreen(
                             .background(
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        Color(0x880B0D14),
-                                        Color(0x990B0D14),
-                                        MidnightBg,
+                                        Color(0x66000000),
+                                        Color(0x99000000),
+                                        cs.background,
                                     ),
                                 )
                             ),
                     )
 
-                    // Pulsante Indietro in alto a sinistra
                     IconButton(
                         onClick = onBack,
                         modifier = Modifier
                             .statusBarsPadding()
                             .padding(12.dp)
                             .clip(CircleShape)
-                            .background(Color(0xAA0B0D14)),
+                            .background(Color(0x99000000)),
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
@@ -177,7 +173,6 @@ fun DetailScreen(
                         )
                     }
 
-                    // Poster + Titolo + Metadati
                     Row(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
@@ -190,21 +185,21 @@ fun DetailScreen(
                             contentDescription = anime.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
-                                .width(106.dp)
-                                .height(154.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(SurfaceElevated),
+                                .width(110.dp)
+                                .height(160.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(cs.surfaceContainerHigh),
                         )
                         Spacer(Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = anime.title,
-                                color = TextPrimary,
-                                fontSize = 18.sp,
+                                color = cs.onBackground,
+                                fontSize = 19.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 maxLines = 3,
                                 overflow = TextOverflow.Ellipsis,
-                                lineHeight = 22.sp,
+                                lineHeight = 23.sp,
                             )
                             Spacer(Modifier.height(8.dp))
                             FlowRow(
@@ -213,24 +208,24 @@ fun DetailScreen(
                             ) {
                                 BadgePill(
                                     text = if (anime.isDub) "ITA" else anime.audioLabel.uppercase(),
-                                    backgroundColor = if (anime.isDub) BadgeItaCoral else BadgeSubCyan,
+                                    backgroundColor = if (anime.isDub) BadgeItaCoral else BadgeSubBlue,
                                 )
                                 BadgePill(
                                     text = anime.type,
-                                    backgroundColor = SurfaceElevated,
-                                    contentColor = TextPrimary,
+                                    backgroundColor = cs.surfaceContainerHigh,
+                                    contentColor = cs.onSurface,
                                 )
                                 BadgePill(
                                     text = anime.status,
-                                    backgroundColor = SurfaceElevated,
-                                    contentColor = AccentCyan,
+                                    backgroundColor = cs.secondaryContainer,
+                                    contentColor = cs.onSecondaryContainer,
                                 )
                                 anime.score?.let { sc ->
                                     Row(
                                         modifier = Modifier
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .background(SurfaceElevated)
-                                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                                            .clip(CircleShape)
+                                            .background(cs.surfaceContainerHigh)
+                                            .padding(horizontal = 7.dp, vertical = 3.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Icon(
@@ -240,7 +235,7 @@ fun DetailScreen(
                                             modifier = Modifier.size(12.dp),
                                         )
                                         Spacer(Modifier.width(2.dp))
-                                        Text(sc, color = TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        Text(sc, color = cs.onSurface, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -254,7 +249,7 @@ fun DetailScreen(
                             if (metaLine.isNotBlank()) {
                                 Text(
                                     text = metaLine,
-                                    color = TextSecondary,
+                                    color = cs.onSurfaceVariant,
                                     fontSize = 12.sp,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
@@ -265,38 +260,29 @@ fun DetailScreen(
                 }
             }
 
-            // Switch lingua SUB / ITA (se disponibili entrambe le varianti) + CTA Guarda/Riprendi
+            // Switch lingua SUB / ITA + CTA Guarda/Riprendi
             item {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                     if (anime.hasSubVariant && anime.hasDubVariant) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(bottom = 10.dp),
+                        SingleChoiceSegmentedButtonRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp),
                         ) {
-                            FilterChip(
+                            SegmentedButton(
                                 selected = !anime.isDub,
                                 onClick = { onSwitchLanguage(false) },
-                                label = { Text("SUB ITA (Originale)", fontWeight = FontWeight.SemiBold) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = BadgeSubCyan,
-                                    selectedLabelColor = Color.White,
-                                    containerColor = SurfaceElevated,
-                                    labelColor = TextSecondary,
-                                ),
-                                border = null,
-                            )
-                            FilterChip(
+                                shape = SegmentedButtonDefaults.itemShape(0, 2),
+                            ) {
+                                Text("SUB ITA (Originale)", fontWeight = FontWeight.SemiBold)
+                            }
+                            SegmentedButton(
                                 selected = anime.isDub,
                                 onClick = { onSwitchLanguage(true) },
-                                label = { Text("Doppiato ITA", fontWeight = FontWeight.SemiBold) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = BadgeItaCoral,
-                                    selectedLabelColor = Color.White,
-                                    containerColor = SurfaceElevated,
-                                    labelColor = TextSecondary,
-                                ),
-                                border = null,
-                            )
+                                shape = SegmentedButtonDefaults.itemShape(1, 2),
+                            ) {
+                                Text("Doppiato ITA", fontWeight = FontWeight.SemiBold)
+                            }
                         }
                     }
 
@@ -309,15 +295,14 @@ fun DetailScreen(
                         }
                         Button(
                             onClick = { onPlayEpisode(anime, state.episodes, primaryEpisodeIndex) },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentViolet),
-                            shape = RoundedCornerShape(12.dp),
+                            shape = CircleShape,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(48.dp),
+                                .height(52.dp),
                         ) {
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(22.dp))
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(24.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(ctaText, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text(ctaText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -326,55 +311,63 @@ fun DetailScreen(
             // Generi & Trama
             if (anime.genres.isNotEmpty() || anime.plot.isNotBlank()) {
                 item {
-                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-                        if (anime.genres.isNotEmpty()) {
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.padding(bottom = 10.dp),
-                            ) {
-                                anime.genres.forEach { genre ->
-                                    BadgePill(
-                                        text = genre,
-                                        backgroundColor = SurfaceElevated,
-                                        contentColor = TextSecondary,
-                                    )
+                    Card(
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerLow),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            if (anime.genres.isNotEmpty()) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.padding(bottom = if (anime.plot.isNotBlank()) 10.dp else 0.dp),
+                                ) {
+                                    anime.genres.forEach { genre ->
+                                        BadgePill(
+                                            text = genre,
+                                            backgroundColor = cs.surfaceContainerHigh,
+                                            contentColor = cs.onSurfaceVariant,
+                                        )
+                                    }
                                 }
                             }
-                        }
 
-                        if (anime.plot.isNotBlank()) {
-                            Text(
-                                text = anime.plot,
-                                color = TextSecondary,
-                                fontSize = 13.sp,
-                                lineHeight = 19.sp,
-                                maxLines = if (plotExpanded) Int.MAX_VALUE else 4,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.clickable { plotExpanded = !plotExpanded },
-                            )
-                            Text(
-                                text = if (plotExpanded) "Mostra meno" else "Leggi tutta la trama",
-                                color = AccentViolet,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier
-                                    .padding(top = 4.dp)
-                                    .clickable { plotExpanded = !plotExpanded },
-                            )
+                            if (anime.plot.isNotBlank()) {
+                                Text(
+                                    text = anime.plot,
+                                    color = cs.onSurfaceVariant,
+                                    fontSize = 13.sp,
+                                    lineHeight = 19.sp,
+                                    maxLines = if (plotExpanded) Int.MAX_VALUE else 4,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.clickable { plotExpanded = !plotExpanded },
+                                )
+                                Text(
+                                    text = if (plotExpanded) "Mostra meno" else "Leggi tutta la trama",
+                                    color = cs.primary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .padding(top = 6.dp)
+                                        .clickable { plotExpanded = !plotExpanded },
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            // Header Episodi + Selettore Range (per anime lunghi es. Naruto / One Piece)
+            // Header Episodi + Selettore Range
             item {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
                     Text(
                         text = "Episodi (${state.episodes.size})",
-                        color = TextPrimary,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
+                        color = cs.onBackground,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.ExtraBold,
                     )
                     if (episodeChunks.size > 1) {
                         Spacer(Modifier.height(8.dp))
@@ -384,12 +377,13 @@ fun DetailScreen(
                                 FilterChip(
                                     selected = idx == safeChunkIndex,
                                     onClick = { selectedRangeIndex = idx },
-                                    label = { Text(label, fontSize = 12.sp) },
+                                    label = { Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
+                                    shape = CircleShape,
                                     colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = AccentViolet,
-                                        selectedLabelColor = Color.White,
-                                        containerColor = SurfaceElevated,
-                                        labelColor = TextSecondary,
+                                        selectedContainerColor = cs.primaryContainer,
+                                        selectedLabelColor = cs.onPrimaryContainer,
+                                        containerColor = cs.surfaceContainer,
+                                        labelColor = cs.onSurfaceVariant,
                                     ),
                                     border = null,
                                 )
@@ -408,7 +402,7 @@ fun DetailScreen(
                                 .padding(32.dp),
                             contentAlignment = Alignment.Center,
                         ) {
-                            CircularProgressIndicator(color = AccentViolet)
+                            CircularProgressIndicator(color = cs.primary)
                         }
                     }
                 }
@@ -423,7 +417,7 @@ fun DetailScreen(
                     item {
                         Text(
                             text = "Nessun episodio ancora disponibile per questa lingua.",
-                            color = TextMuted,
+                            color = cs.onSurfaceVariant,
                             fontSize = 14.sp,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                         )
@@ -460,132 +454,133 @@ private fun EpisodeRow(
     onPlay: () -> Unit,
     onDownload: () -> Unit,
 ) {
-    Column(
+    val cs = MaterialTheme.colorScheme
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = cs.surfaceContainer),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(SurfaceDark)
-            .clickable(onClick = onPlay)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .clickable(onClick = onPlay),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(38.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(
-                        if (progress?.completed == true) BadgeGreen.copy(alpha = 0.2f)
-                        else AccentViolet.copy(alpha = 0.2f)
-                    ),
-                contentAlignment = Alignment.Center,
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                if (progress?.completed == true) {
-                    Icon(
-                        Icons.Rounded.CheckCircle,
-                        contentDescription = "Visto",
-                        tint = BadgeGreen,
-                        modifier = Modifier.size(22.dp),
-                    )
-                } else {
-                    Icon(
-                        Icons.Rounded.PlayArrow,
-                        contentDescription = "Riproduci",
-                        tint = AccentViolet,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
-            }
-
-            Spacer(Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "Episodio ${episode.number}",
-                        color = TextPrimary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    if (episode.isFiller) {
-                        Spacer(Modifier.width(6.dp))
-                        BadgePill(
-                            text = "FILLER",
-                            backgroundColor = SurfaceElevated,
-                            contentColor = TextMuted,
-                        )
-                    }
-                }
-                val subtitle = buildList {
-                    if (episode.runtimeSeconds > 0) add("${episode.runtimeSeconds / 60} min")
-                    if (progress != null && !progress.completed && progress.positionMs > 0L) {
-                        add("Riprendi da ${formatTimeMs(progress.positionMs)}")
-                    } else if (progress?.completed == true) {
-                        add("Completato")
-                    }
-                    if (downloadEntry?.status == DownloadStatus.COMPLETED) {
-                        add("Offline pronto")
-                    }
-                }.joinToString(" • ")
-
-                if (subtitle.isNotBlank()) {
-                    Text(text = subtitle, color = TextSecondary, fontSize = 12.sp)
-                }
-            }
-
-            // Icona Download / Progresso / Scaricato
-            when (downloadEntry?.status) {
-                DownloadStatus.COMPLETED -> {
-                    Icon(
-                        Icons.Rounded.DownloadDone,
-                        contentDescription = "Scaricato offline",
-                        tint = BadgeGreen,
-                        modifier = Modifier
-                            .padding(8.dp)
-                            .size(22.dp),
-                    )
-                }
-
-                DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> {
-                    Box(
-                        modifier = Modifier.size(38.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator(
-                            progress = { downloadEntry.progressFraction.coerceAtLeast(0.08f) },
-                            color = AccentViolet,
-                            strokeWidth = 2.5.dp,
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (progress?.completed == true) BadgeGreen.copy(alpha = 0.18f)
+                            else cs.primaryContainer
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (progress?.completed == true) {
+                        Icon(
+                            Icons.Rounded.CheckCircle,
+                            contentDescription = "Visto",
+                            tint = BadgeGreen,
                             modifier = Modifier.size(22.dp),
                         )
-                    }
-                }
-
-                else -> {
-                    IconButton(onClick = onDownload) {
+                    } else {
                         Icon(
-                            Icons.Rounded.Download,
-                            contentDescription = "Scarica episodio",
-                            tint = TextSecondary,
+                            Icons.Rounded.PlayArrow,
+                            contentDescription = "Riproduci",
+                            tint = cs.onPrimaryContainer,
+                            modifier = Modifier.size(24.dp),
                         )
                     }
                 }
-            }
-        }
 
-        if (progress != null && progress.fraction > 0f && !progress.completed) {
-            Spacer(Modifier.height(6.dp))
-            LinearProgressIndicator(
-                progress = { progress.fraction },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .clip(RoundedCornerShape(2.dp)),
-                color = AccentViolet,
-                trackColor = SurfaceElevated,
-            )
+                Spacer(Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Episodio ${episode.number}",
+                            color = cs.onSurface,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        if (episode.isFiller) {
+                            Spacer(Modifier.width(6.dp))
+                            BadgePill(
+                                text = "FILLER",
+                                backgroundColor = cs.surfaceContainerHigh,
+                                contentColor = cs.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    val subtitle = buildList {
+                        if (episode.runtimeSeconds > 0) add("${episode.runtimeSeconds / 60} min")
+                        if (progress != null && !progress.completed && progress.positionMs > 0L) {
+                            add("Riprendi da ${formatTimeMs(progress.positionMs)}")
+                        } else if (progress?.completed == true) {
+                            add("Completato")
+                        }
+                        if (downloadEntry?.status == DownloadStatus.COMPLETED) {
+                            add("Offline pronto")
+                        }
+                    }.joinToString(" • ")
+
+                    if (subtitle.isNotBlank()) {
+                        Text(text = subtitle, color = cs.onSurfaceVariant, fontSize = 12.sp)
+                    }
+                }
+
+                when (downloadEntry?.status) {
+                    DownloadStatus.COMPLETED -> {
+                        Icon(
+                            Icons.Rounded.DownloadDone,
+                            contentDescription = "Scaricato offline",
+                            tint = BadgeGreen,
+                            modifier = Modifier
+                                .padding(8.dp)
+                                .size(22.dp),
+                        )
+                    }
+
+                    DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> {
+                        Box(
+                            modifier = Modifier.size(38.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator(
+                                progress = { downloadEntry.progressFraction.coerceAtLeast(0.08f) },
+                                color = cs.primary,
+                                strokeWidth = 2.5.dp,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                    }
+
+                    else -> {
+                        IconButton(onClick = onDownload) {
+                            Icon(
+                                Icons.Rounded.Download,
+                                contentDescription = "Scarica episodio",
+                                tint = cs.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (progress != null && progress.fraction > 0f && !progress.completed) {
+                Spacer(Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    progress = { progress.fraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(CircleShape),
+                    color = cs.primary,
+                    trackColor = cs.surfaceContainerHigh,
+                )
+            }
         }
     }
 }

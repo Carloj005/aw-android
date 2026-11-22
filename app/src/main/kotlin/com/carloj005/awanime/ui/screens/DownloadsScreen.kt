@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
@@ -30,6 +31,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -46,17 +48,9 @@ import com.carloj005.awanime.data.model.DownloadEntry
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.formatBytes
 import com.carloj005.awanime.ui.components.BadgePill
-import com.carloj005.awanime.ui.theme.AccentViolet
 import com.carloj005.awanime.ui.theme.BadgeGreen
 import com.carloj005.awanime.ui.theme.BadgeItaCoral
-import com.carloj005.awanime.ui.theme.BadgeSubCyan
-import com.carloj005.awanime.ui.theme.ErrorRed
-import com.carloj005.awanime.ui.theme.MidnightBg
-import com.carloj005.awanime.ui.theme.SurfaceDark
-import com.carloj005.awanime.ui.theme.SurfaceElevated
-import com.carloj005.awanime.ui.theme.TextMuted
-import com.carloj005.awanime.ui.theme.TextPrimary
-import com.carloj005.awanime.ui.theme.TextSecondary
+import com.carloj005.awanime.ui.theme.BadgeSubBlue
 
 @Composable
 fun DownloadsScreen(
@@ -66,6 +60,7 @@ fun DownloadsScreen(
     onDelete: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val cs = MaterialTheme.colorScheme
     val totalStored = downloads
         .filter { it.status == DownloadStatus.COMPLETED }
         .sumOf { it.totalBytes }
@@ -73,7 +68,7 @@ fun DownloadsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MidnightBg)
+            .background(cs.background)
             .padding(top = 12.dp),
     ) {
         Row(
@@ -84,39 +79,43 @@ fun DownloadsScreen(
         ) {
             Text(
                 text = "Download Offline",
-                color = TextPrimary,
-                fontSize = 22.sp,
+                color = cs.onBackground,
+                fontSize = 24.sp,
                 fontWeight = FontWeight.ExtraBold,
                 modifier = Modifier.weight(1f),
             )
             if (totalStored > 0L) {
                 BadgePill(
                     text = formatBytes(totalStored),
-                    backgroundColor = SurfaceElevated,
-                    contentColor = TextSecondary,
+                    backgroundColor = cs.secondaryContainer,
+                    contentColor = cs.onSecondaryContainer,
                 )
             }
         }
 
         if (downloads.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
                     Icon(
                         imageVector = Icons.Rounded.Downloading,
                         contentDescription = null,
-                        tint = TextMuted,
-                        modifier = Modifier.size(56.dp),
+                        tint = cs.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.size(60.dp),
                     )
                     Spacer(Modifier.height(12.dp))
-                    Text("Nessun episodio scaricato", color = TextSecondary, fontSize = 15.sp)
+                    Text("Nessun episodio scaricato", color = cs.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
-                    Text("Apri un anime e tocca l'icona download accanto a un episodio", color = TextMuted, fontSize = 13.sp)
+                    Text(
+                        "Apri un anime e tocca l'icona download accanto a un episodio",
+                        color = cs.onSurfaceVariant,
+                        fontSize = 13.sp,
+                    )
                 }
             }
         } else {
             LazyColumn(
                 contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
                 items(downloads, key = { it.key }) { entry ->
@@ -139,17 +138,18 @@ private fun DownloadItemCard(
     onCancel: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val cs = MaterialTheme.colorScheme
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = entry.status == DownloadStatus.COMPLETED, onClick = onPlay),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cs.surfaceContainer),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(10.dp),
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             AsyncImage(
@@ -157,16 +157,16 @@ private fun DownloadItemCard(
                 contentDescription = entry.animeTitle,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .width(64.dp)
-                    .height(92.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(SurfaceElevated),
+                    .width(66.dp)
+                    .height(96.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(cs.surfaceContainerHigh),
             )
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = entry.animeTitle,
-                    color = TextPrimary,
+                    color = cs.onSurface,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -179,11 +179,11 @@ private fun DownloadItemCard(
                 ) {
                     BadgePill(
                         text = if (entry.isDub) "ITA" else "SUB",
-                        backgroundColor = if (entry.isDub) BadgeItaCoral else BadgeSubCyan,
+                        backgroundColor = if (entry.isDub) BadgeItaCoral else BadgeSubBlue,
                     )
                     Text(
                         text = "Episodio ${entry.episodeNum}",
-                        color = TextSecondary,
+                        color = cs.onSurfaceVariant,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
@@ -192,7 +192,7 @@ private fun DownloadItemCard(
 
                 when (entry.status) {
                     DownloadStatus.QUEUED -> {
-                        Text("In coda...", color = TextSecondary, fontSize = 12.sp)
+                        Text("In coda...", color = cs.onSurfaceVariant, fontSize = 12.sp)
                     }
 
                     DownloadStatus.DOWNLOADING -> {
@@ -201,16 +201,16 @@ private fun DownloadItemCard(
                         } else {
                             formatBytes(entry.bytesDownloaded)
                         }
-                        Text(sizeText, color = AccentViolet, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text(sizeText, color = cs.primary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(4.dp))
                         LinearProgressIndicator(
                             progress = { entry.progressFraction },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(5.dp)
-                                .clip(RoundedCornerShape(4.dp)),
-                            color = AccentViolet,
-                            trackColor = SurfaceElevated,
+                                .clip(CircleShape),
+                            color = cs.primary,
+                            trackColor = cs.surfaceContainerHigh,
                         )
                     }
 
@@ -230,24 +230,24 @@ private fun DownloadItemCard(
                                 fontWeight = FontWeight.Medium,
                             )
                         }
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(8.dp))
                         Button(
                             onClick = onPlay,
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = BadgeGreen),
-                            modifier = Modifier.height(32.dp),
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                            shape = CircleShape,
+                            colors = ButtonDefaults.buttonColors(containerColor = BadgeGreen, contentColor = Color.White),
+                            modifier = Modifier.height(34.dp),
                         ) {
                             Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Guarda Offline", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("Guarda Offline", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
 
                     DownloadStatus.FAILED -> {
                         Text(
                             text = entry.errorMessage ?: "Download fallito",
-                            color = ErrorRed,
+                            color = cs.error,
                             fontSize = 12.sp,
                             maxLines = 2,
                         )
@@ -257,11 +257,11 @@ private fun DownloadItemCard(
 
             if (entry.status == DownloadStatus.DOWNLOADING || entry.status == DownloadStatus.QUEUED) {
                 IconButton(onClick = onCancel) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Annulla", tint = TextSecondary)
+                    Icon(Icons.Rounded.Close, contentDescription = "Annulla", tint = cs.onSurfaceVariant)
                 }
             } else {
                 IconButton(onClick = onDelete) {
-                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "Elimina", tint = ErrorRed)
+                    Icon(Icons.Rounded.DeleteOutline, contentDescription = "Elimina", tint = cs.error)
                 }
             }
         }

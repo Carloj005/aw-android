@@ -84,6 +84,8 @@ class HistoryRepository(context: Context) {
                 plot = anime.plot.ifBlank { existing?.anime?.plot.orEmpty() },
                 genres = anime.genres.ifEmpty { existing?.anime?.genres.orEmpty() },
                 studios = anime.studios.ifEmpty { existing?.anime?.studios.orEmpty() },
+                anilistId = anime.anilistId.takeIf { it > 0 } ?: (existing?.anime?.anilistId ?: 0),
+                malId = anime.malId.takeIf { it > 0 } ?: (existing?.anime?.malId ?: 0),
                 totalEpisodes = anime.totalEpisodes ?: existing?.anime?.totalEpisodes,
                 releasedEpisodes = maxOf(anime.releasedEpisodes, existing?.anime?.releasedEpisodes ?: 0),
             )

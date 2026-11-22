@@ -4,19 +4,26 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.carloj005.awanime.AwAnimeApp
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.DownloadEntry
+import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.model.LatestFilter
+import com.carloj005.awanime.data.model.ThemeMode
+import com.carloj005.awanime.data.model.UpdateInfo
 import com.carloj005.awanime.data.model.WatchHistoryEntry
+import com.carloj005.awanime.data.network.SearchUtils
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 
 data class HomeUiState(
     val selectedFilter: LatestFilter = LatestFilter.ALL,
+    val heroCarousel: List<AnimeItem> = emptyList(),
     val items: List<AnimeItem> = emptyList(),
     val isLoading: Boolean = true,
     val error: String? = null,
@@ -46,19 +53,36 @@ data class PlayerLaunchRequest(
     val startPositionMs: Long,
 )
 
+data class UpdateUiState(
+    val availableUpdate: UpdateInfo? = null,
+    val showDialog: Boolean = false,
+    val isChecking: Boolean = false,
+    val isDownloading: Boolean = false,
+    val downloadProgress: Float = 0f,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val statusMessage: String? = null,
+    val needsInstallPermission: Boolean = false,
+    val pendingApkFile: File? = null,
+)
+
 class AppViewModel : ViewModel() {
 
     private val client = AwAnimeApp.instance.animeUnityClient
     val historyRepo = AwAnimeApp.instance.historyRepository
     val downloadRepo = AwAnimeApp.instance.downloadRepository
+    val settingsRepo = AwAnimeApp.instance.settingsRepository
+    val updater = AwAnimeApp.instance.appUpdater
 
     val history: StateFlow<List<WatchHistoryEntry>> = historyRepo.history
     val downloads: StateFlow<List<DownloadEntry>> = downloadRepo.downloads
+    val settings: StateFlow<AppSettings> = settingsRepo.settings
 
     private val homeCache = mutableMapOf<LatestFilter, List<AnimeItem>>()
     private var homeJob: Job? = null
     private var searchJob: Job? = null
     private var detailJob: Job? = null
+    private var updateJob: Job? = null
 
     private val _homeState = MutableStateFlow(HomeUiState())
     val homeState: StateFlow<HomeUiState> = _homeState.asStateFlow()
@@ -72,8 +96,14 @@ class AppViewModel : ViewModel() {
     private val _activePlayer = MutableStateFlow<PlayerLaunchRequest?>(null)
     val activePlayer: StateFlow<PlayerLaunchRequest?> = _activePlayer.asStateFlow()
 
+    private val _updateState = MutableStateFlow(UpdateUiState())
+    val updateState: StateFlow<UpdateUiState> = _updateState.asStateFlow()
+
     init {
         loadHome(LatestFilter.ALL)
+        if (settings.value.autoCheckUpdates) {
+            checkForUpdates(manual = false)
+        }
     }
 
     fun loadHome(filter: LatestFilter = _homeState.value.selectedFilter, forceRefresh: Boolean = false) {
@@ -100,28 +130,31 @@ class AppViewModel : ViewModel() {
             )
         }
         homeJob = viewModelScope.launch {
-            runCatching { client.getLatestEpisodes(filter) }
-                .onSuccess { list ->
-                    homeCache[filter] = list
-                    _homeState.update {
-                        it.copy(
-                            selectedFilter = filter,
-                            items = list,
-                            isLoading = false,
-                            error = null,
-                            activeDomain = client.baseUrl.removePrefix("https://"),
-                        )
-                    }
+            runCatching {
+                val list = client.getLatestEpisodes(filter)
+                val carousel = runCatching { client.getHomeCarousel(forceRefresh = forceRefresh) }.getOrDefault(emptyList())
+                list to carousel
+            }.onSuccess { (list, carousel) ->
+                homeCache[filter] = list
+                _homeState.update { st ->
+                    st.copy(
+                        selectedFilter = filter,
+                        heroCarousel = if (carousel.isNotEmpty()) carousel else st.heroCarousel,
+                        items = list,
+                        isLoading = false,
+                        error = null,
+                        activeDomain = client.baseUrl.removePrefix("https://"),
+                    )
                 }
-                .onFailure { err ->
-                    _homeState.update {
-                        it.copy(
-                            selectedFilter = filter,
-                            isLoading = false,
-                            error = err.message ?: "Errore di connessione ad AnimeUnity",
-                        )
-                    }
+            }.onFailure { err ->
+                _homeState.update {
+                    it.copy(
+                        selectedFilter = filter,
+                        isLoading = false,
+                        error = err.message ?: "Errore di connessione ad AnimeUnity",
+                    )
                 }
+            }
         }
     }
 
@@ -179,9 +212,8 @@ class AppViewModel : ViewModel() {
                     error = null,
                 )
             }.onFailure { err ->
-                // Fallback offline: se ci sono episodi scaricati per questo anime, mostrali!
                 val offlineEps = downloadRepo.downloads.value
-                    .filter { it.animeId == anime.id && it.isDub == anime.isDub && it.status == com.carloj005.awanime.data.model.DownloadStatus.COMPLETED }
+                    .filter { it.animeId == anime.id && it.isDub == anime.isDub && it.status == DownloadStatus.COMPLETED }
                     .map {
                         EpisodeItem(
                             number = it.episodeNum,
@@ -211,7 +243,7 @@ class AppViewModel : ViewModel() {
     fun switchDetailLanguage(wantDub: Boolean) {
         val current = _detailState.value.anime ?: return
         if (current.isDub == wantDub) return
-        val baseTitle = com.carloj005.awanime.data.network.SearchUtils.stripDubTags(current.title)
+        val baseTitle = SearchUtils.stripDubTags(current.title)
         val switched = current.copy(
             title = if (wantDub) "$baseTitle (ITA)" else baseTitle,
             isDub = wantDub,
@@ -248,26 +280,48 @@ class AppViewModel : ViewModel() {
         )
     }
 
+    fun quickWatchAnime(anime: AnimeItem) {
+        viewModelScope.launch {
+            val fullAnime = runCatching { client.getAnimeDetails(anime.id, anime.isDub) }.getOrDefault(anime)
+            val eps = runCatching { client.getEpisodes(fullAnime.id, fullAnime.isDub) }.getOrDefault(emptyList())
+            if (eps.isNotEmpty()) {
+                val hist = historyRepo.getEntry(fullAnime.uniqueKey)
+                val targetIdx = if (hist != null) {
+                    val idx = eps.indexOfFirst { it.number == hist.currentEpisodeNum }.coerceAtLeast(0)
+                    if (hist.completed && idx + 1 < eps.size) idx + 1 else idx
+                } else {
+                    0
+                }
+                startPlayback(fullAnime, eps, targetIdx, resumeFromHistory = true)
+            } else {
+                openAnimeDetail(fullAnime)
+            }
+        }
+    }
+
     fun resumeFromHistory(entry: WatchHistoryEntry) {
         viewModelScope.launch {
-            val loadedEps = runCatching { client.getEpisodes(entry.anime.id, entry.anime.isDub) }
+            val fullAnime = if (entry.anime.malId == 0) {
+                runCatching { client.getAnimeDetails(entry.anime.id, entry.anime.isDub) }.getOrDefault(entry.anime)
+            } else {
+                entry.anime
+            }
+            val loadedEps = runCatching { client.getEpisodes(fullAnime.id, fullAnime.isDub) }
                 .getOrElse {
-                    // Fallback: almeno l'episodio corrente (es. se scaricato offline)
                     listOf(
                         EpisodeItem(
                             number = entry.currentEpisodeNum,
                             videoId = entry.currentVideoId,
-                            language = if (entry.anime.isDub) "ita" else "jpn",
+                            language = if (fullAnime.isDub) "ita" else "jpn",
                         )
                     )
                 }
             if (loadedEps.isEmpty()) return@launch
             val curIdx = loadedEps.indexOfFirst { it.number == entry.currentEpisodeNum }.coerceAtLeast(0)
             val targetIdx = if (entry.completed && curIdx + 1 < loadedEps.size) curIdx + 1 else curIdx
-            val targetEp = loadedEps[targetIdx]
             val startMs = if (targetIdx == curIdx && !entry.completed) entry.progressMs else 0L
             _activePlayer.value = PlayerLaunchRequest(
-                anime = entry.anime,
+                anime = fullAnime,
                 episodes = loadedEps,
                 startIndex = targetIdx,
                 startPositionMs = startMs,
@@ -288,9 +342,9 @@ class AppViewModel : ViewModel() {
             .filter {
                 it.animeId == entry.animeId &&
                     it.isDub == entry.isDub &&
-                    it.status == com.carloj005.awanime.data.model.DownloadStatus.COMPLETED
+                    it.status == DownloadStatus.COMPLETED
             }
-            .sortedWith(compareBy { com.carloj005.awanime.data.network.SearchUtils.episodeSortKey(it.episodeNum) })
+            .sortedWith(compareBy { SearchUtils.episodeSortKey(it.episodeNum) })
             .map {
                 EpisodeItem(
                     number = it.episodeNum,
@@ -307,5 +361,136 @@ class AppViewModel : ViewModel() {
 
     fun closePlayer() {
         _activePlayer.value = null
+    }
+
+    // =========================================================================
+    // Impostazioni & Aggiornamenti Automatici
+    // =========================================================================
+
+    fun setThemeMode(mode: ThemeMode) = settingsRepo.update { it.copy(themeMode = mode) }
+    fun setDynamicColors(enabled: Boolean) = settingsRepo.update { it.copy(dynamicColors = enabled) }
+    fun setAutoSkipIntro(enabled: Boolean) = settingsRepo.update { it.copy(autoSkipIntro = enabled) }
+    fun setAutoSkipOutro(enabled: Boolean) = settingsRepo.update { it.copy(autoSkipOutro = enabled) }
+    fun setAutoCheckUpdates(enabled: Boolean) = settingsRepo.update { it.copy(autoCheckUpdates = enabled) }
+
+    fun checkForUpdates(manual: Boolean = true) {
+        if (_updateState.value.isChecking || _updateState.value.isDownloading) return
+        updateJob?.cancel()
+        _updateState.update {
+            it.copy(
+                isChecking = true,
+                statusMessage = if (manual) "Controllo aggiornamenti su GitHub..." else it.statusMessage,
+            )
+        }
+        updateJob = viewModelScope.launch {
+            runCatching { updater.checkForUpdate() }
+                .onSuccess { info ->
+                    _updateState.update {
+                        it.copy(
+                            isChecking = false,
+                            availableUpdate = info,
+                            showDialog = info != null,
+                            statusMessage = when {
+                                info != null -> "Nuova versione ${info.tagName} disponibile!"
+                                manual -> "L'app è già aggiornata all'ultima versione."
+                                else -> null
+                            },
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _updateState.update {
+                        it.copy(
+                            isChecking = false,
+                            statusMessage = if (manual) {
+                                "Impossibile verificare aggiornamenti (${err.message ?: "rete non disponibile"})."
+                            } else {
+                                null
+                            },
+                        )
+                    }
+                }
+        }
+    }
+
+    fun showUpdateDialog() {
+        if (_updateState.value.availableUpdate != null) {
+            _updateState.update { it.copy(showDialog = true) }
+        }
+    }
+
+    fun dismissUpdateDialog() {
+        if (!_updateState.value.isDownloading) {
+            _updateState.update { it.copy(showDialog = false, needsInstallPermission = false) }
+        }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val info = _updateState.value.availableUpdate ?: return
+        if (_updateState.value.isDownloading) return
+
+        // Se l'APK è già stato scaricato e stavamo aspettando il permesso "Sorgenti sconosciute"
+        val existingApk = _updateState.value.pendingApkFile
+        if (existingApk != null && existingApk.exists()) {
+            if (updater.canInstallPackages()) {
+                _updateState.update { it.copy(needsInstallPermission = false) }
+                updater.launchApkInstaller(existingApk)
+            } else {
+                updater.openInstallPermissionSettings()
+            }
+            return
+        }
+
+        updateJob = viewModelScope.launch {
+            _updateState.update {
+                it.copy(
+                    isDownloading = true,
+                    downloadProgress = 0f,
+                    downloadedBytes = 0L,
+                    totalBytes = info.sizeBytes,
+                    statusMessage = "Download aggiornamento ${info.tagName}...",
+                    needsInstallPermission = false,
+                )
+            }
+            runCatching {
+                updater.downloadUpdateApk(info) { frac, dl, tot ->
+                    _updateState.update {
+                        it.copy(
+                            downloadProgress = frac,
+                            downloadedBytes = dl,
+                            totalBytes = tot,
+                        )
+                    }
+                }
+            }.onSuccess { apkFile ->
+                if (updater.canInstallPackages()) {
+                    _updateState.update {
+                        it.copy(
+                            isDownloading = false,
+                            pendingApkFile = apkFile,
+                            statusMessage = "Download completato, avvio installazione...",
+                        )
+                    }
+                    updater.launchApkInstaller(apkFile)
+                } else {
+                    _updateState.update {
+                        it.copy(
+                            isDownloading = false,
+                            pendingApkFile = apkFile,
+                            needsInstallPermission = true,
+                            statusMessage = "Abilita 'Consenti da questa sorgente' per completare l'aggiornamento.",
+                        )
+                    }
+                    updater.openInstallPermissionSettings()
+                }
+            }.onFailure { err ->
+                _updateState.update {
+                    it.copy(
+                        isDownloading = false,
+                        statusMessage = "Errore download aggiornamento: ${err.message}",
+                    )
+                }
+            }
+        }
     }
 }

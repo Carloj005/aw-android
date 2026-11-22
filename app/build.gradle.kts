@@ -1,8 +1,28 @@
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
 }
+
+val signingPropsFile = file("${System.getProperty("user.home")}/.aw-android-signing/signing.properties")
+val signingProps = Properties().apply {
+  if (signingPropsFile.exists()) {
+    val cleanContent = signingPropsFile.readText(Charsets.UTF_8).removePrefix("\uFEFF")
+    load(cleanContent.reader())
+  }
+}
+
+val releaseStoreFilePath = System.getenv("KEYSTORE_FILE") ?: signingProps.getProperty("storeFile")
+val releaseStorePassword = System.getenv("KEYSTORE_PASSWORD") ?: signingProps.getProperty("storePassword")
+val releaseKeyAlias = System.getenv("KEY_ALIAS") ?: signingProps.getProperty("keyAlias")
+val releaseKeyPassword = System.getenv("KEY_PASSWORD") ?: signingProps.getProperty("keyPassword")
+val hasReleaseSigning = !releaseStoreFilePath.isNullOrBlank() &&
+  file(releaseStoreFilePath).exists() &&
+  !releaseStorePassword.isNullOrBlank() &&
+  !releaseKeyAlias.isNullOrBlank() &&
+  !releaseKeyPassword.isNullOrBlank()
 
 android {
   namespace = "com.carloj005.awanime"
@@ -13,15 +33,31 @@ android {
     applicationId = "com.carloj005.awanime"
     minSdk = 26
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0.0"
+    versionCode = 2
+    versionName = "1.1.0"
+    buildConfigField("String", "GITHUB_REPO", "\"Carloj005/aw-android\"")
+  }
+
+  signingConfigs {
+    if (hasReleaseSigning) {
+      create("release") {
+        storeFile = file(releaseStoreFilePath!!)
+        storePassword = releaseStorePassword
+        keyAlias = releaseKeyAlias
+        keyPassword = releaseKeyPassword
+      }
+    }
   }
 
   buildTypes {
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("debug")
+      signingConfig = if (hasReleaseSigning) {
+        signingConfigs.getByName("release")
+      } else {
+        signingConfigs.getByName("debug")
+      }
     }
   }
 
