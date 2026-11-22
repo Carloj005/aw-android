@@ -1,0 +1,208 @@
+package com.carloj005.awanime.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PlayCircle
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.LatestFilter
+import com.carloj005.awanime.data.model.WatchHistoryEntry
+import com.carloj005.awanime.ui.HomeUiState
+import com.carloj005.awanime.ui.components.AnimePosterCard
+import com.carloj005.awanime.ui.components.ContinueWatchingCard
+import com.carloj005.awanime.ui.components.ErrorRetryBox
+import com.carloj005.awanime.ui.components.LoadingPlaceholderBox
+import com.carloj005.awanime.ui.theme.AccentCyan
+import com.carloj005.awanime.ui.theme.AccentViolet
+import com.carloj005.awanime.ui.theme.MidnightBg
+import com.carloj005.awanime.ui.theme.SurfaceElevated
+import com.carloj005.awanime.ui.theme.TextPrimary
+import com.carloj005.awanime.ui.theme.TextSecondary
+
+@Composable
+fun HomeScreen(
+    state: HomeUiState,
+    history: List<WatchHistoryEntry>,
+    onSelectFilter: (LatestFilter) -> Unit,
+    onRefresh: () -> Unit,
+    onOpenSearch: () -> Unit,
+    onAnimeClick: (AnimeItem) -> Unit,
+    onResumeHistory: (WatchHistoryEntry) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MidnightBg),
+    ) {
+        // Top Brand Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.PlayCircle,
+                contentDescription = null,
+                tint = AccentViolet,
+                modifier = Modifier.size(30.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AW Anime",
+                    color = TextPrimary,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                )
+                Text(
+                    text = state.activeDomain,
+                    color = AccentCyan,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            IconButton(onClick = onRefresh) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "Aggiorna", tint = TextSecondary)
+            }
+            IconButton(onClick = onOpenSearch) {
+                Icon(Icons.Rounded.Search, contentDescription = "Cerca", tint = TextPrimary)
+            }
+        }
+
+        // Filter Chips (Tutti / SUB / ITA / Tendenze)
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(bottom = 8.dp),
+        ) {
+            items(LatestFilter.entries) { filter ->
+                val selected = state.selectedFilter == filter
+                FilterChip(
+                    selected = selected,
+                    onClick = { onSelectFilter(filter) },
+                    label = {
+                        Text(
+                            text = filter.label,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                        )
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = AccentViolet,
+                        selectedLabelColor = Color.White,
+                        containerColor = SurfaceElevated,
+                        labelColor = TextSecondary,
+                    ),
+                    border = null,
+                    shape = RoundedCornerShape(10.dp),
+                )
+            }
+        }
+
+        when {
+            state.isLoading && state.items.isEmpty() -> {
+                LoadingPlaceholderBox(text = "Connessione a ${state.activeDomain}...")
+            }
+
+            state.error != null && state.items.isEmpty() -> {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    ErrorRetryBox(message = state.error, onRetry = onRefresh)
+                }
+            }
+
+            else -> {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    // Sezione "Continua a guardare" se presente cronologia
+                    if (history.isNotEmpty()) {
+                        item(span = { GridItemSpan(2) }) {
+                            Column(modifier = Modifier.padding(bottom = 8.dp)) {
+                                Text(
+                                    text = "Continua a guardare",
+                                    color = TextPrimary,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(bottom = 10.dp),
+                                )
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    items(history.take(10), key = { it.uniqueKey }) { entry ->
+                                        ContinueWatchingCard(
+                                            entry = entry,
+                                            onResume = { onResumeHistory(entry) },
+                                            onOpenDetail = { onAnimeClick(entry.anime) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    item(span = { GridItemSpan(2) }) {
+                        val headerText = when (state.selectedFilter) {
+                            LatestFilter.TRENDING -> "Top Anime in Tendenza"
+                            LatestFilter.DUB -> "Ultimi Episodi Doppiati (ITA)"
+                            LatestFilter.SUB -> "Ultimi Episodi SUB ITA"
+                            LatestFilter.ALL -> "Ultimi Episodi Usciti"
+                        }
+                        Text(
+                            text = headerText,
+                            color = TextPrimary,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
+                        )
+                    }
+
+                    items(
+                        items = state.items,
+                        key = { "${it.uniqueKey}_${it.latestVideoId ?: it.latestEpisodeNum ?: ""}" },
+                    ) { anime ->
+                        AnimePosterCard(
+                            anime = anime,
+                            onClick = { onAnimeClick(anime) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
