@@ -7,6 +7,7 @@ import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.model.LatestFilter
 import com.carloj005.awanime.data.model.SkipKind
 import com.carloj005.awanime.data.model.SkipSegment
+import com.carloj005.awanime.data.model.StreamCandidate
 import com.carloj005.awanime.data.model.StreamResolution
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -170,14 +171,28 @@ class AnimeUnityClient(context: Context?) {
         .followSslRedirects(false)
         .build()
 
-    /** OkHttpClient dedicato a ExoPlayer e download video (senza cookie, HTTPS-only + DoH). */
+    /** OkHttpClient dedicato a ExoPlayer (senza cookie, pool compatto anti-503 su nginx, HTTPS-only + DoH). */
     val mediaOkHttpClient: OkHttpClient = OkHttpClient.Builder()
         .dns(dohDns)
         .addInterceptor(httpsOnlyInterceptor)
+        .connectionPool(okhttp3.ConnectionPool(4, 2, TimeUnit.MINUTES))
+        .retryOnConnectionFailure(true)
         .followRedirects(true)
         .followSslRedirects(false)
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
+
+    /** OkHttpClient separato per i download MP4 in background (evita contesa col player). */
+    val downloadOkHttpClient: OkHttpClient = OkHttpClient.Builder()
+        .dns(dohDns)
+        .addInterceptor(httpsOnlyInterceptor)
+        .connectionPool(okhttp3.ConnectionPool(2, 1, TimeUnit.MINUTES))
+        .retryOnConnectionFailure(true)
+        .followRedirects(true)
+        .followSslRedirects(false)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
         .build()
 
     val imageOkHttpClient: OkHttpClient = OkHttpClient.Builder()
@@ -314,10 +329,12 @@ class AnimeUnityClient(context: Context?) {
         if (filter == LatestFilter.TRENDING) {
             val payload = apiGetJson("/api/top-anime?page=1").jsonObject
             val arr = payload["data"]?.jsonArray ?: JsonArray(emptyList())
+            val seenTrending = HashSet<String>()
             return@withContext arr.mapNotNull { elem ->
                 val obj = elem as? JsonObject ?: return@mapNotNull null
                 val expanded = parseAnimeVariants(obj)
                 val primary = expanded.firstOrNull() ?: return@mapNotNull null
+                if (!seenTrending.add(primary.uniqueKey)) return@mapNotNull null
                 primary.copy(
                     latestEpisodeNum = if (primary.releasedEpisodes > 0) primary.releasedEpisodes.toString() else "1",
                 )
@@ -330,6 +347,7 @@ class AnimeUnityClient(context: Context?) {
             else -> ""
         }
         val collected = mutableListOf<AnimeItem>()
+        val seenLatestKeys = HashSet<String>()
         for (page in 1..2) {
             val payload = apiGetJson("/api/home/latest-episodes?page=$page$langQuery").jsonObject
             val arr = payload["data"]?.jsonArray ?: break
@@ -349,7 +367,10 @@ class AnimeUnityClient(context: Context?) {
                     latestEpNum = epNum,
                     latestVideoId = videoId,
                 )
-                collected.add(parsed)
+                val dedupeKey = "${parsed.uniqueKey}_${parsed.latestVideoId ?: parsed.latestEpisodeNum ?: ""}"
+                if (seenLatestKeys.add(dedupeKey)) {
+                    collected.add(parsed)
+                }
             }
             val lastPage = payload.intVal("last_page") ?: 1
             if (page >= lastPage) break
@@ -537,24 +558,27 @@ class AnimeUnityClient(context: Context?) {
             }
         }
 
-        val candidates = mutableListOf<String>()
-        var qualityLabel = "HD"
+        val embedOrigin = embedUrl.toHttpUrlOrNull()?.let { "${it.scheme}://${it.host}/" } ?: "https://vixcloud.cc/"
+
+        val candidates = mutableListOf<StreamCandidate>()
+        val seenUrls = HashSet<String>()
+        var qualityLabel = "1080p HLS"
 
         val hlsMaster = extractHlsMasterUrl(embedHtml)
         if (hlsMaster != null) {
-            val best = resolveBestHlsVariant(hlsMaster)
-            if (best != null) {
-                candidates.add(best.first)
-                qualityLabel = best.second
+            val best = resolveBestHlsVariant(hlsMaster, embedOrigin)
+            if (best != null && seenUrls.add(best.first)) {
+                candidates.add(StreamCandidate(url = best.first, isHls = true, qualityLabel = "${best.second} HLS"))
+                qualityLabel = "${best.second} HLS"
             }
-            if (hlsMaster !in candidates) {
-                candidates.add(hlsMaster)
+            if (seenUrls.add(hlsMaster)) {
+                candidates.add(StreamCandidate(url = hlsMaster, isHls = true, qualityLabel = "HLS AUTO"))
             }
         }
 
         val directUrl = extractDirectDownloadUrl(embedHtml)
-        if (directUrl != null && directUrl !in candidates) {
-            candidates.add(directUrl)
+        if (directUrl != null && seenUrls.add(directUrl)) {
+            candidates.add(StreamCandidate(url = directUrl, isHls = false, qualityLabel = "MP4"))
         }
 
         if (candidates.isEmpty()) {
@@ -566,8 +590,8 @@ class AnimeUnityClient(context: Context?) {
         StreamResolution(
             candidates = candidates,
             downloadUrl = directUrl,
-            referer = "https://vixcloud.cc/",
-            qualityLabel = qualityLabel,
+            referer = embedOrigin,
+            qualityLabel = candidates.first().qualityLabel,
             skipSegments = skipSegments,
         )
     }
@@ -726,12 +750,12 @@ class AnimeUnityClient(context: Context?) {
      * Risolve la variante HLS alla massima risoluzione (es. 1920x1080 FHD).
      * Ritorna Pair(variantUrl, qualityLabel).
      */
-    private fun resolveBestHlsVariant(masterUrl: String): Pair<String, String>? {
+    private fun resolveBestHlsVariant(masterUrl: String, referer: String): Pair<String, String>? {
         return try {
             val req = Request.Builder()
                 .url(masterUrl)
                 .header("User-Agent", USER_AGENT)
-                .header("Referer", "https://vixcloud.cc/")
+                .header("Referer", referer)
                 .build()
             externalOkHttpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return null

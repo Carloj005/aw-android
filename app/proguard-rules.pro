@@ -19,6 +19,7 @@
 -keepclasseswithmembers class com.carloj005.awanime.data.model.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+-keepclassmembers enum com.carloj005.awanime.data.model.** { *; }
 
 # Keep OkHttp / Okio optional platform classes cleanly
 -dontwarn okhttp3.**

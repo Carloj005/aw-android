@@ -194,10 +194,11 @@ fun DetailScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             IconButton(
                                 onClick = {
+                                    val base = com.carloj005.awanime.AwAnimeApp.instance.animeUnityClient.baseUrl
                                     val shareUrl = if (anime.slug.isNotBlank()) {
-                                        "https://animeunity.cx/anime/${anime.id}-${anime.slug}"
+                                        "$base/anime/${anime.id}-${anime.slug}"
                                     } else {
-                                        "https://animeunity.cx/anime/${anime.id}-x"
+                                        "$base/anime/${anime.id}-x"
                                     }
                                     val sendIntent = Intent(Intent.ACTION_SEND).apply {
                                         type = "text/plain"

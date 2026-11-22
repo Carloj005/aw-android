@@ -2,6 +2,11 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.2.1 — Fix Definitivo Skip Rapidi HLS & Bugfix Suite
+- **Fix critico streaming HLS reale (stop fallback MP4 + HTTP 503)**: impostato esplicitamente `MimeTypes.APPLICATION_M3U8` sugli URL `/playlist/<id>` di VixCloud (privi di estensione `.m3u8`) così Media3 usa davvero **`HlsMediaSource`** su `au-u1-01` (limite 16 connessioni) invece di ricadere di nascosto sull'MP4 (`au-d1-01`, limite 2 connessioni → `HTTP 503` dopo skip rapidi).
+- **`ResilientStreamErrorPolicy` + auto-refresh token**: fino a 5 retry con backoff su `HTTP 503`/`429`, pool connessioni dedicato separato dai download in background, rinnovo automatico singolo del token conservando il minutaggio esatto e codice HTTP mostrato chiaramente in caso di errore.
+- **Altri 7 bug risolti**: clamp sicuro dei seek entro `durationMs` (evita `HTTP 416`), fix chiusura stantia in `DisposableEffect` che salvava il progresso sul primo episodio dopo auto-avanzamento, fix audio residuo alla chiusura PiP (`ON_STOP`), `setAutoEnterEnabled` fluido su Android 12+, completamento garantito su `STATE_ENDED`, blocco auto-hide durante trascinamento Slider, deduplicazione chiavi Home anti-crash e controllo redirect hop in `AppUpdater`.
+
 ## Novità v1.2.0 — Sicurezza, Qualità & Nuove Funzionalità
 ### 🔒 Hardening & Sicurezza
 - **Aggiornamenti verificati crittograficamente**: l'updater controlla solo host HTTPS fidati GitHub, verifica il checksum **SHA-256** del file `.apk.sha256` pubblicato nella release e controlla tramite `PackageManager` che il **certificato di firma digitale** dell'APK scaricato coincida con quello dell'app installata prima ancora di aprire l'installer Android.

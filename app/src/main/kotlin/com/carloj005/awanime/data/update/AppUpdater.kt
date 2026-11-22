@@ -39,7 +39,7 @@ class AppUpdater(private val context: Context) {
     }
 
     private val httpClient = OkHttpClient.Builder()
-        .addInterceptor(strictHttpsGitHubInterceptor)
+        .addNetworkInterceptor(strictHttpsGitHubInterceptor)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)

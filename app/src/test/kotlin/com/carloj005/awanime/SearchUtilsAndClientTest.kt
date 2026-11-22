@@ -4,6 +4,7 @@ import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.AppBackupData
 import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.SkipKind
+import com.carloj005.awanime.data.model.StreamCandidate
 import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.data.network.DohFallbackDns
@@ -191,5 +192,22 @@ class SearchUtilsAndClientTest {
         assertEquals(listOf("jojo", "solo leveling"), decoded.settings.recentQueries)
         assertEquals(1, decoded.favorites.size)
         assertEquals("Steel Ball Run", decoded.favorites.first().title)
+    }
+
+    @Test
+    fun streamCandidate_explicitlyMarksExtensionlessVixCloudPlaylistAsHls() {
+        val hlsCand = StreamCandidate(
+            url = "https://vixcloud.cc/playlist/801828?type=video&rendition=1080p&token=abc&expires=9999",
+            isHls = true,
+            qualityLabel = "1080p FHD HLS",
+        )
+        val mp4Cand = StreamCandidate(
+            url = "https://au-d1-01.vix-content.net/download/1080p.mp4?token=xyz",
+            isHls = false,
+            qualityLabel = "MP4",
+        )
+        assertTrue(hlsCand.isHls)
+        assertFalse(hlsCand.url.endsWith(".m3u8"))
+        assertFalse(mp4Cand.isHls)
     }
 }

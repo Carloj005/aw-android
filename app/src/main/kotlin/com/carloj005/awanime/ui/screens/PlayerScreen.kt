@@ -77,6 +77,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -99,22 +100,27 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.carloj005.awanime.AwAnimeApp
 import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.SkipKind
 import com.carloj005.awanime.data.model.SkipSegment
+import com.carloj005.awanime.data.model.StreamCandidate
 import com.carloj005.awanime.data.model.formatTimeMs
 import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.ui.PlayerLaunchRequest
@@ -126,6 +132,43 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+private fun buildMediaItem(candidate: StreamCandidate): MediaItem {
+    val builder = MediaItem.Builder().setUri(Uri.parse(candidate.url))
+    if (candidate.isHls) {
+        builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+    }
+    return builder.build()
+}
+
+private fun findHttpStatusCode(error: Throwable?): Int? {
+    var curr = error
+    while (curr != null) {
+        if (curr is HttpDataSource.InvalidResponseCodeException) {
+            return curr.responseCode
+        }
+        curr = curr.cause
+    }
+    return null
+}
+
+@OptIn(UnstableApi::class)
+private class ResilientStreamErrorPolicy : DefaultLoadErrorHandlingPolicy(5) {
+    override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+        val httpCode = findHttpStatusCode(loadErrorInfo.exception)
+        if (httpCode != null) {
+            return when (httpCode) {
+                429, 503, 502, 504, 500, 408 -> {
+                    val count = loadErrorInfo.errorCount.coerceAtLeast(1)
+                    (count * 700L).coerceAtMost(3_500L)
+                }
+                403, 404, 410, 416 -> C.TIME_UNSET
+                else -> super.getRetryDelayMsFor(loadErrorInfo)
+            }
+        }
+        return super.getRetryDelayMsFor(loadErrorInfo)
+    }
 }
 
 @OptIn(UnstableApi::class)
@@ -155,10 +198,12 @@ fun PlayerScreen(
     var isResolving by remember { mutableStateOf(true) }
     var isBuffering by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var qualityBadge by remember { mutableStateOf("1080p") }
-    var streamCandidates by remember { mutableStateOf<List<String>>(emptyList()) }
+    var qualityBadge by remember { mutableStateOf("1080p HLS") }
+    var streamCandidates by remember { mutableStateOf<List<StreamCandidate>>(emptyList()) }
     var candidateIdx by remember { mutableIntStateOf(0) }
     var retryCounter by remember { mutableIntStateOf(0) }
+    var hasAutoRefreshedToken by remember(currentIndex) { mutableStateOf(false) }
+    var isLocalOfflineStream by remember(currentIndex) { mutableStateOf(false) }
 
     // Smart Skip OP/ED (VixCloud native timestamps + AniSkip fallback)
     var skipSegments by remember { mutableStateOf<List<SkipSegment>>(emptyList()) }
@@ -202,7 +247,7 @@ fun PlayerScreen(
     var volumeFraction by remember {
         mutableFloatStateOf(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVolume.toFloat())
     }
-    var activeGestureHud by remember { mutableStateOf<Pair<Boolean, Float>?>(null) } // true=brightness, false=volume
+    var activeGestureHud by remember { mutableStateOf<Pair<Boolean, Float>?>(null) }
 
     // Blocca landscape + fullscreen immersivo + schermo sempre acceso
     DisposableEffect(activity) {
@@ -228,9 +273,9 @@ fun PlayerScreen(
         }
     }
 
-    // ExoPlayer Media3 con OkHttp + DoH + Referer VixCloud + LoadControl anti-stallo + 1080p FHD
-    val exoPlayer = remember(context) {
-        val httpFactory = OkHttpDataSource.Factory(client.mediaOkHttpClient)
+    // Factory HTTP dinamica (aggiorna Referer/Origin in base al mirror VixCloud attivo)
+    val httpDataSourceFactory = remember(client) {
+        OkHttpDataSource.Factory(client.mediaOkHttpClient)
             .setUserAgent(AnimeUnityClient.USER_AGENT)
             .setDefaultRequestProperties(
                 mapOf(
@@ -238,10 +283,16 @@ fun PlayerScreen(
                     "Origin" to "https://vixcloud.cc",
                 )
             )
-        val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+    }
+
+    // ExoPlayer Media3: HLS reale 1080p, LoadControl bilanciato per skip rapidi, ErrorPolicy anti-503/429, AudioFocus
+    val exoPlayer = remember(context) {
+        val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+            .setLoadErrorHandlingPolicy(ResilientStreamErrorPolicy())
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(15_000, 60_000, 1_500, 3_000)
-            .setBackBuffer(30_000, true)
+            .setBufferDurationsMs(12_000, 35_000, 1_000, 2_000)
+            .setBackBuffer(20_000, true)
             .build()
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(
@@ -255,7 +306,7 @@ fun PlayerScreen(
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
         ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setMediaSourceFactory(mediaSourceFactory)
             .setLoadControl(loadControl)
             .setTrackSelector(trackSelector)
             .setAudioAttributes(audioAttributes, true)
@@ -263,14 +314,20 @@ fun PlayerScreen(
             .build()
     }
 
-    fun persistCurrentProgress() {
-        val dur = exoPlayer.duration.takeIf { it > 0L } ?: durationMs
-        val pos = exoPlayer.currentPosition.coerceAtLeast(0L)
+    // State sempre aggiornati per evitare chiusure stantie nei DisposableEffect tra un episodio e l'altro
+    val latestEpisode by rememberUpdatedState(currentEpisode)
+    val latestDurationMs by rememberUpdatedState(durationMs)
+    val latestIsInPip by rememberUpdatedState(isInPipMode)
+
+    fun persistCurrentProgress(forceCompleted: Boolean = false) {
+        val ep = latestEpisode
+        val dur = exoPlayer.duration.takeIf { it > 0L } ?: latestDurationMs
+        val pos = if (forceCompleted && dur > 0L) dur else exoPlayer.currentPosition.coerceAtLeast(0L)
         if (dur > 0L || pos > 2_000L) {
             historyRepo.updateProgress(
                 anime = request.anime,
-                episodeNum = currentEpisode.number,
-                videoId = currentEpisode.videoId,
+                episodeNum = ep.number,
+                videoId = ep.videoId,
                 positionMs = pos,
                 durationMs = dur,
             )
@@ -295,7 +352,11 @@ fun PlayerScreen(
             switchEpisode(currentIndex + 1)
             return
         }
-        val target = segment.endMs.coerceAtMost((durationMs - 500L).coerceAtLeast(segment.endMs))
+        val target = if (durationMs > 1_000L) {
+            segment.endMs.coerceIn(0L, durationMs - 1_000L)
+        } else {
+            segment.endMs.coerceAtLeast(0L)
+        }
         exoPlayer.seekTo(target)
         positionMs = target
         if (wasAuto) {
@@ -310,7 +371,7 @@ fun PlayerScreen(
         }
     }
 
-    DisposableEffect(exoPlayer, currentIndex, streamCandidates, candidateIdx) {
+    DisposableEffect(exoPlayer, currentIndex, streamCandidates, candidateIdx, isLocalOfflineStream, hasAutoRefreshedToken) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 isBuffering = state == Player.STATE_BUFFERING
@@ -318,7 +379,7 @@ fun PlayerScreen(
                     durationMs = exoPlayer.duration.coerceAtLeast(0L)
                 }
                 if (state == Player.STATE_ENDED) {
-                    persistCurrentProgress()
+                    persistCurrentProgress(forceCompleted = true)
                     if (hasNextEpisode && !outroCountdownCancelled) {
                         switchEpisode(currentIndex + 1)
                     }
@@ -331,16 +392,29 @@ fun PlayerScreen(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                val resumePos = exoPlayer.currentPosition.coerceAtLeast(positionMs).coerceAtLeast(pendingSeekMs)
+                val httpCode = findHttpStatusCode(error)
                 val nextCand = candidateIdx + 1
                 if (nextCand < streamCandidates.size) {
                     candidateIdx = nextCand
-                    val resumePos = exoPlayer.currentPosition.coerceAtLeast(pendingSeekMs)
-                    exoPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(streamCandidates[nextCand])))
+                    val cand = streamCandidates[nextCand]
+                    qualityBadge = cand.qualityLabel
+                    exoPlayer.setMediaItem(buildMediaItem(cand))
                     exoPlayer.prepare()
                     if (resumePos > 0L) exoPlayer.seekTo(resumePos)
+                    exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
                     exoPlayer.playWhenReady = true
+                } else if (!isLocalOfflineStream && !hasAutoRefreshedToken &&
+                    (httpCode == null || httpCode in setOf(403, 410, 429, 500, 502, 503, 504))
+                ) {
+                    // Rinnovo automatico singolo di token/stream conservando esattamente il punto raggiunto
+                    hasAutoRefreshedToken = true
+                    pendingSeekMs = resumePos
+                    retryCounter++
                 } else {
-                    errorMessage = "Errore stream (${error.errorCodeName}). Tocca Riprova."
+                    pendingSeekMs = resumePos
+                    val detail = if (httpCode != null) "HTTP $httpCode" else error.errorCodeName
+                    errorMessage = "Errore stream ($detail). Tocca Riprova."
                     isBuffering = false
                 }
             }
@@ -356,14 +430,15 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-pausa su ON_PAUSE quando NON siamo in Picture-in-Picture (es. schermo spento o cambio app)
-    DisposableEffect(lifecycleOwner, exoPlayer, isInPipMode) {
+    // Auto-pausa su ON_PAUSE quando NON siamo in PiP e su ON_STOP sempre (es. chiusura finestra PiP)
+    DisposableEffect(lifecycleOwner, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE && !isInPipMode) {
+            if (event == Lifecycle.Event.ON_PAUSE && !latestIsInPip) {
                 persistCurrentProgress()
                 exoPlayer.pause()
             } else if (event == Lifecycle.Event.ON_STOP) {
                 persistCurrentProgress()
+                exoPlayer.pause()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -386,16 +461,17 @@ fun PlayerScreen(
         val ep = request.episodes[currentIndex.coerceIn(0, request.episodes.lastIndex)]
         val localFile = downloadRepo.getLocalFileIfReady(request.anime.id, request.anime.isDub, ep.number)
         if (localFile != null) {
+            isLocalOfflineStream = true
             qualityBadge = "OFFLINE"
             val uri = Uri.fromFile(localFile)
-            streamCandidates = listOf(uri.toString())
+            val cand = StreamCandidate(url = uri.toString(), isHls = false, qualityLabel = "OFFLINE")
+            streamCandidates = listOf(cand)
             isResolving = false
-            exoPlayer.setMediaItem(MediaItem.fromUri(uri))
+            exoPlayer.setMediaItem(buildMediaItem(cand))
             exoPlayer.prepare()
             if (pendingSeekMs > 0L) exoPlayer.seekTo(pendingSeekMs)
             exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
             exoPlayer.playWhenReady = true
-            // Anche in locale proviamo AniSkip se c'è rete e malId
             if (request.anime.malId > 0) {
                 val aniSkip = client.fetchAniSkipSegments(request.anime.malId, ep.number, ep.runtimeSeconds)
                 if (aniSkip.isNotEmpty()) skipSegments = aniSkip
@@ -403,14 +479,22 @@ fun PlayerScreen(
             return@LaunchedEffect
         }
 
+        isLocalOfflineStream = false
         runCatching { client.resolveStream(request.anime.id, ep.videoId) }
             .onSuccess { res ->
+                val origin = res.referer.trimEnd('/')
+                httpDataSourceFactory.setDefaultRequestProperties(
+                    mapOf(
+                        "Referer" to res.referer,
+                        "Origin" to origin,
+                    )
+                )
                 qualityBadge = res.qualityLabel
                 streamCandidates = res.candidates
                 skipSegments = res.skipSegments
                 candidateIdx = 0
                 isResolving = false
-                exoPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(res.candidates.first())))
+                exoPlayer.setMediaItem(buildMediaItem(res.candidates.first()))
                 exoPlayer.prepare()
                 if (pendingSeekMs > 0L) exoPlayer.seekTo(pendingSeekMs)
                 exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
@@ -487,9 +571,12 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-hide controlli, unlock pill, feedback, undo pill
-    LaunchedEffect(controlsVisible, isPlaying, episodeDrawerOpen) {
-        if (controlsVisible && isPlaying && !episodeDrawerOpen) {
+    // Auto-hide controlli (NON nasconde mai mentre l'utente sta trascinando lo Slider!)
+    LaunchedEffect(controlsVisible, isPlaying, episodeDrawerOpen, isSeeking) {
+        if (!controlsVisible && isSeeking) {
+            isSeeking = false
+        }
+        if (controlsVisible && isPlaying && !episodeDrawerOpen && !isSeeking) {
             delay(3500L)
             controlsVisible = false
         }
@@ -514,7 +601,12 @@ fun PlayerScreen(
     }
 
     fun seekBy(deltaMs: Long, label: String) {
-        val target = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, durationMs.coerceAtLeast(exoPlayer.currentPosition + deltaMs))
+        val rawTarget = exoPlayer.currentPosition + deltaMs
+        val target = if (durationMs > 1_000L) {
+            rawTarget.coerceIn(0L, durationMs - 1_000L)
+        } else {
+            rawTarget.coerceAtLeast(0L)
+        }
         exoPlayer.seekTo(target)
         positionMs = target
         seekFeedback = label
@@ -524,9 +616,10 @@ fun PlayerScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(isScreenLocked, episodeDrawerOpen) {
+            .pointerInput(isScreenLocked, episodeDrawerOpen, isInPipMode) {
                 detectTapGestures(
                     onTap = {
+                        if (isInPipMode) return@detectTapGestures
                         if (isScreenLocked) {
                             showUnlockPill = !showUnlockPill
                         } else if (episodeDrawerOpen) {
@@ -536,7 +629,7 @@ fun PlayerScreen(
                         }
                     },
                     onDoubleTap = { offset ->
-                        if (!isScreenLocked && !episodeDrawerOpen) {
+                        if (!isInPipMode && !isScreenLocked && !episodeDrawerOpen) {
                             if (offset.x < size.width / 2f) {
                                 seekBy(-10_000L, "-10s")
                             } else {
@@ -546,7 +639,7 @@ fun PlayerScreen(
                     },
                 )
             }
-            .pointerInput(isScreenLocked, episodeDrawerOpen) {
+            .pointerInput(isScreenLocked, episodeDrawerOpen, isInPipMode) {
                 var isLeftSide = true
                 detectVerticalDragGestures(
                     onDragStart = { startOffset ->
@@ -558,7 +651,7 @@ fun PlayerScreen(
                     onDragEnd = { activeGestureHud = null },
                     onDragCancel = { activeGestureHud = null },
                     onVerticalDrag = { _, dragAmount ->
-                        if (isScreenLocked || episodeDrawerOpen) return@detectVerticalDragGestures
+                        if (isInPipMode || isScreenLocked || episodeDrawerOpen) return@detectVerticalDragGestures
                         val delta = -dragAmount / (size.height * 0.65f)
                         if (isLeftSide) {
                             brightnessLevel = (brightnessLevel + delta).coerceIn(0.02f, 1.0f)
@@ -596,70 +689,74 @@ fun PlayerScreen(
             Box(modifier = Modifier.align(Alignment.Center)) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = cs.primary)
-                    if (isResolving) {
+                    if (isResolving && !isInPipMode) {
                         Spacer(Modifier.height(10.dp))
-                        Text("Risoluzione stream 1080p...", color = Color.White, fontSize = 13.sp)
+                        Text("Risoluzione stream 1080p HLS...", color = Color.White, fontSize = 13.sp)
                     }
                 }
             }
         }
 
         // HUD verticale Luminosità / Volume
-        activeGestureHud?.let { (isBrightness, fraction) ->
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = Color(0xCC11131C),
-                modifier = Modifier
-                    .align(if (isBrightness) Alignment.CenterStart else Alignment.CenterEnd)
-                    .padding(horizontal = 36.dp),
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp),
+        if (!isInPipMode) {
+            activeGestureHud?.let { (isBrightness, fraction) ->
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color(0xCC11131C),
+                    modifier = Modifier
+                        .align(if (isBrightness) Alignment.CenterStart else Alignment.CenterEnd)
+                        .padding(horizontal = 36.dp),
                 ) {
-                    Icon(
-                        imageVector = if (isBrightness) Icons.Rounded.Brightness6 else Icons.AutoMirrored.Rounded.VolumeUp,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(22.dp),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Box(
-                        modifier = Modifier
-                            .width(6.dp)
-                            .height(110.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.25f)),
-                        contentAlignment = Alignment.BottomCenter,
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp),
                     ) {
+                        Icon(
+                            imageVector = if (isBrightness) Icons.Rounded.Brightness6 else Icons.AutoMirrored.Rounded.VolumeUp,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Spacer(Modifier.height(10.dp))
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .fillMaxHeight(fraction.coerceIn(0.02f, 1f))
+                                .width(6.dp)
+                                .height(110.dp)
                                 .clip(CircleShape)
-                                .background(cs.primary),
-                        )
+                                .background(Color.White.copy(alpha = 0.25f)),
+                            contentAlignment = Alignment.BottomCenter,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .fillMaxHeight(fraction.coerceIn(0.02f, 1f))
+                                    .clip(CircleShape)
+                                    .background(cs.primary),
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text("${(fraction * 100).toInt()}%", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Text("${(fraction * 100).toInt()}%", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
         // Badge feedback rapido (-10s / +10s)
-        seekFeedback?.let { fb ->
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .clip(CircleShape)
-                    .background(Color(0xCC0B0D14))
-                    .padding(horizontal = 22.dp, vertical = 10.dp),
-            ) {
-                Text(fb, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+        if (!isInPipMode) {
+            seekFeedback?.let { fb ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .clip(CircleShape)
+                        .background(Color(0xCC0B0D14))
+                        .padding(horizontal = 22.dp, vertical = 10.dp),
+                ) {
+                    Text(fb, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+                }
             }
         }
 
-        // Pillola "Annulla Auto-Skip" (quando Auto-Skip scatta automaticamente)
+        // Pillola "Annulla Auto-Skip"
         AnimatedVisibility(
             visible = undoSkipInfo != null && !isScreenLocked && !isInPipMode,
             enter = fadeIn() + slideInVertically { it / 2 },
@@ -693,7 +790,7 @@ fun PlayerScreen(
             }
         }
 
-        // Bottone Fluttuante Stile Netflix "Salta Sigla" / "Salta Outro" (visibile ANCHE a controlli nascosti!)
+        // Bottone Fluttuante Stile Netflix "Salta Sigla" / "Salta Outro"
         val showFloatingSkipButton = activeSkipSegment != null &&
             !isScreenLocked &&
             !episodeDrawerOpen &&
@@ -799,9 +896,9 @@ fun PlayerScreen(
             }
         }
 
-        // Pillola "Sblocca schermo" quando il lucchetto è attivo
+        // Pillola "Sblocca schermo"
         AnimatedVisibility(
-            visible = isScreenLocked && showUnlockPill,
+            visible = isScreenLocked && showUnlockPill && !isInPipMode,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -827,27 +924,36 @@ fun PlayerScreen(
         }
 
         // Schermata Errore
-        errorMessage?.let { err ->
-            Surface(
-                shape = RoundedCornerShape(22.dp),
-                color = Color(0xEE141824),
-                modifier = Modifier.align(Alignment.Center),
-            ) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+        if (!isInPipMode) {
+            errorMessage?.let { err ->
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = Color(0xEE141824),
+                    modifier = Modifier.align(Alignment.Center),
                 ) {
-                    Text(err, color = Color(0xFFFF6B81), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(14.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        FilledTonalButton(
-                            onClick = {
-                                persistCurrentProgress()
-                                onClose()
-                            },
-                            shape = CircleShape,
-                        ) { Text("Chiudi") }
-                        Button(onClick = { retryCounter++ }, shape = CircleShape) { Text("Riprova") }
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(err, color = Color(0xFFFF6B81), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(14.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            FilledTonalButton(
+                                onClick = {
+                                    persistCurrentProgress()
+                                    onClose()
+                                },
+                                shape = CircleShape,
+                            ) { Text("Chiudi") }
+                            Button(
+                                onClick = {
+                                    pendingSeekMs = positionMs.coerceAtLeast(pendingSeekMs)
+                                    hasAutoRefreshedToken = false
+                                    retryCounter++
+                                },
+                                shape = CircleShape,
+                            ) { Text("Riprova") }
+                        }
                     }
                 }
             }
@@ -1045,8 +1151,8 @@ fun PlayerScreen(
                             sliderPosition = value
                         },
                         onValueChangeFinished = {
-                            if (durationMs > 0L) {
-                                val target = (sliderPosition * durationMs).toLong()
+                            if (durationMs > 1_000L) {
+                                val target = (sliderPosition * durationMs).toLong().coerceIn(0L, durationMs - 1_000L)
                                 exoPlayer.seekTo(target)
                                 positionMs = target
                             }
@@ -1065,7 +1171,7 @@ fun PlayerScreen(
 
         // DRAWER EPISODI IN-PLAYER (slide da destra)
         AnimatedVisibility(
-            visible = episodeDrawerOpen,
+            visible = episodeDrawerOpen && !isInPipMode,
             enter = slideInHorizontally { it },
             exit = slideOutHorizontally { it },
             modifier = Modifier.align(Alignment.CenterEnd),

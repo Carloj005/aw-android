@@ -110,8 +110,14 @@ data class EpisodeItem(
     val isFiller: Boolean = false,
 )
 
+data class StreamCandidate(
+    val url: String,
+    val isHls: Boolean,
+    val qualityLabel: String = "1080p",
+)
+
 data class StreamResolution(
-    val candidates: List<String>,
+    val candidates: List<StreamCandidate>,
     val downloadUrl: String?,
     val referer: String,
     val qualityLabel: String = "1080p",

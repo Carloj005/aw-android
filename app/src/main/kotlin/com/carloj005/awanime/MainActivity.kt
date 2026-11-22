@@ -86,17 +86,32 @@ class MainActivity : ComponentActivity() {
     fun enterPipIfSupported() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             runCatching {
-                val params = PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(16, 9))
-                    .build()
+                val params = buildPipParams(autoEnter = shouldAutoEnterPip)
                 enterPictureInPictureMode(params)
             }
         }
     }
 
+    private fun buildPipParams(autoEnter: Boolean): PictureInPictureParams {
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(autoEnter)
+            builder.setSeamlessResizeEnabled(true)
+        }
+        return builder.build()
+    }
+
+    fun updateAutoPip(enabled: Boolean) {
+        shouldAutoEnterPip = enabled
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { setPictureInPictureParams(buildPipParams(autoEnter = enabled)) }
+        }
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (shouldAutoEnterPip) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && shouldAutoEnterPip) {
             enterPipIfSupported()
         }
     }
@@ -116,7 +131,7 @@ class MainActivity : ComponentActivity() {
             val isInPip by isInPipState
 
             LaunchedEffect(activePlayer, settings.autoPipEnabled) {
-                shouldAutoEnterPip = activePlayer != null && settings.autoPipEnabled
+                updateAutoPip(activePlayer != null && settings.autoPipEnabled)
             }
 
             val isDark = when (settings.themeMode) {

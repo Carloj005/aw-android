@@ -148,7 +148,7 @@ class DownloadRepository(
                         .header("Referer", "https://vixcloud.cc/")
                         .build()
 
-                    client.mediaOkHttpClient.newCall(req).execute().use { resp ->
+                    client.downloadOkHttpClient.newCall(req).execute().use { resp ->
                         if (!resp.isSuccessful) {
                             throw IllegalStateException("Errore server download HTTP ${resp.code}")
                         }
