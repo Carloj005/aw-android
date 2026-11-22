@@ -123,4 +123,23 @@ class HistoryRepository(context: Context) {
         }
         _history.value = emptyList()
     }
+
+    fun mergeImport(imported: List<WatchHistoryEntry>) {
+        if (imported.isEmpty()) return
+        val merged = synchronized(lock) {
+            val byKey = LinkedHashMap<String, WatchHistoryEntry>()
+            for (e in _history.value) byKey[e.uniqueKey] = e
+            for (inc in imported) {
+                val prev = byKey[inc.uniqueKey]
+                if (prev == null || inc.updatedAt >= prev.updatedAt) {
+                    val mergedEps = (prev?.episodesProgress ?: emptyMap()) + inc.episodesProgress
+                    byKey[inc.uniqueKey] = inc.copy(episodesProgress = mergedEps)
+                }
+            }
+            val list = byKey.values.sortedByDescending { it.updatedAt }
+            writeToDisk(list)
+            list
+        }
+        _history.value = merged
+    }
 }

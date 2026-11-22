@@ -1,24 +1,31 @@
 package com.carloj005.awanime.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.carloj005.awanime.AwAnimeApp
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.AppBackupData
 import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.DownloadEntry
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.model.LatestFilter
+import com.carloj005.awanime.data.model.SearchFilter
 import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.UpdateInfo
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.network.SearchUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.io.File
 
 data class HomeUiState(
@@ -26,12 +33,14 @@ data class HomeUiState(
     val heroCarousel: List<AnimeItem> = emptyList(),
     val items: List<AnimeItem> = emptyList(),
     val isLoading: Boolean = true,
+    val isRefreshing: Boolean = false,
     val error: String? = null,
     val activeDomain: String = "animeunity.cx",
 )
 
 data class SearchUiState(
     val query: String = "",
+    val filter: SearchFilter = SearchFilter.ALL,
     val results: List<AnimeItem> = emptyList(),
     val isLoading: Boolean = false,
     val hasSearched: Boolean = false,
@@ -70,14 +79,17 @@ class AppViewModel : ViewModel() {
 
     private val client = AwAnimeApp.instance.animeUnityClient
     val historyRepo = AwAnimeApp.instance.historyRepository
+    val favoritesRepo = AwAnimeApp.instance.favoritesRepository
     val downloadRepo = AwAnimeApp.instance.downloadRepository
     val settingsRepo = AwAnimeApp.instance.settingsRepository
     val updater = AwAnimeApp.instance.appUpdater
 
     val history: StateFlow<List<WatchHistoryEntry>> = historyRepo.history
+    val favorites: StateFlow<List<AnimeItem>> = favoritesRepo.favorites
     val downloads: StateFlow<List<DownloadEntry>> = downloadRepo.downloads
     val settings: StateFlow<AppSettings> = settingsRepo.settings
 
+    private val backupJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
     private val homeCache = mutableMapOf<LatestFilter, List<AnimeItem>>()
     private var homeJob: Job? = null
     private var searchJob: Job? = null
@@ -87,7 +99,9 @@ class AppViewModel : ViewModel() {
     private val _homeState = MutableStateFlow(HomeUiState())
     val homeState: StateFlow<HomeUiState> = _homeState.asStateFlow()
 
-    private val _searchState = MutableStateFlow(SearchUiState())
+    private val _searchState = MutableStateFlow(
+        SearchUiState(recentQueries = settingsRepo.settings.value.recentQueries)
+    )
     val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
 
     private val _detailState = MutableStateFlow(DetailUiState())
@@ -98,6 +112,9 @@ class AppViewModel : ViewModel() {
 
     private val _updateState = MutableStateFlow(UpdateUiState())
     val updateState: StateFlow<UpdateUiState> = _updateState.asStateFlow()
+
+    private val _settingsFeedback = MutableStateFlow<String?>(null)
+    val settingsFeedback: StateFlow<String?> = _settingsFeedback.asStateFlow()
 
     init {
         loadHome(LatestFilter.ALL)
@@ -115,6 +132,7 @@ class AppViewModel : ViewModel() {
                     selectedFilter = filter,
                     items = cached,
                     isLoading = false,
+                    isRefreshing = false,
                     error = null,
                     activeDomain = client.baseUrl.removePrefix("https://"),
                 )
@@ -125,7 +143,8 @@ class AppViewModel : ViewModel() {
         _homeState.update {
             it.copy(
                 selectedFilter = filter,
-                isLoading = true,
+                isLoading = it.items.isEmpty() || !forceRefresh,
+                isRefreshing = forceRefresh && it.items.isNotEmpty(),
                 error = null,
             )
         }
@@ -142,6 +161,7 @@ class AppViewModel : ViewModel() {
                         heroCarousel = if (carousel.isNotEmpty()) carousel else st.heroCarousel,
                         items = list,
                         isLoading = false,
+                        isRefreshing = false,
                         error = null,
                         activeDomain = client.baseUrl.removePrefix("https://"),
                     )
@@ -151,6 +171,7 @@ class AppViewModel : ViewModel() {
                     it.copy(
                         selectedFilter = filter,
                         isLoading = false,
+                        isRefreshing = false,
                         error = err.message ?: "Errore di connessione ad AnimeUnity",
                     )
                 }
@@ -162,12 +183,22 @@ class AppViewModel : ViewModel() {
         _searchState.update { it.copy(query = newQuery) }
     }
 
+    fun setSearchFilter(filter: SearchFilter) {
+        _searchState.update { it.copy(filter = filter) }
+    }
+
+    fun clearRecentQueries() {
+        settingsRepo.update { it.copy(recentQueries = emptyList()) }
+        _searchState.update { it.copy(recentQueries = emptyList()) }
+    }
+
     fun performSearch(rawQuery: String = _searchState.value.query) {
         val q = rawQuery.trim()
         if (q.isEmpty()) return
         searchJob?.cancel()
+        val updatedRecent = (listOf(q) + _searchState.value.recentQueries.filterNot { it.equals(q, ignoreCase = true) }).take(10)
+        settingsRepo.update { it.copy(recentQueries = updatedRecent) }
         _searchState.update { st ->
-            val updatedRecent = (listOf(q) + st.recentQueries.filterNot { it.equals(q, ignoreCase = true) }).take(8)
             st.copy(
                 query = q,
                 isLoading = true,
@@ -255,6 +286,14 @@ class AppViewModel : ViewModel() {
     fun closeDetail() {
         detailJob?.cancel()
         _detailState.value = DetailUiState()
+    }
+
+    fun toggleFavorite(anime: AnimeItem) {
+        favoritesRepo.toggleFavorite(anime)
+    }
+
+    fun removeFavorite(uniqueKey: String) {
+        favoritesRepo.remove(uniqueKey)
     }
 
     fun startPlayback(
@@ -364,7 +403,7 @@ class AppViewModel : ViewModel() {
     }
 
     // =========================================================================
-    // Impostazioni & Aggiornamenti Automatici
+    // Impostazioni, Backup/Ripristino, Cache & Aggiornamenti Automatici
     // =========================================================================
 
     fun setThemeMode(mode: ThemeMode) = settingsRepo.update { it.copy(themeMode = mode) }
@@ -372,6 +411,57 @@ class AppViewModel : ViewModel() {
     fun setAutoSkipIntro(enabled: Boolean) = settingsRepo.update { it.copy(autoSkipIntro = enabled) }
     fun setAutoSkipOutro(enabled: Boolean) = settingsRepo.update { it.copy(autoSkipOutro = enabled) }
     fun setAutoCheckUpdates(enabled: Boolean) = settingsRepo.update { it.copy(autoCheckUpdates = enabled) }
+    fun setWifiOnlyDownloads(enabled: Boolean) = settingsRepo.update { it.copy(wifiOnlyDownloads = enabled) }
+    fun setAutoPipEnabled(enabled: Boolean) = settingsRepo.update { it.copy(autoPipEnabled = enabled) }
+
+    fun setSettingsFeedback(message: String?) {
+        _settingsFeedback.value = message
+    }
+
+    fun buildBackupJson(): String {
+        val data = AppBackupData(
+            schemaVersion = 1,
+            exportedAt = System.currentTimeMillis(),
+            settings = settings.value,
+            history = history.value,
+            favorites = favorites.value,
+        )
+        return backupJson.encodeToString(data)
+    }
+
+    fun importBackupJson(rawText: String): Result<String> {
+        return runCatching {
+            val parsed = backupJson.decodeFromString<AppBackupData>(rawText)
+            historyRepo.mergeImport(parsed.history)
+            favoritesRepo.mergeImport(parsed.favorites)
+            settingsRepo.replace(parsed.settings)
+            _searchState.update { it.copy(recentQueries = parsed.settings.recentQueries) }
+            "Ripristino completato: ${parsed.history.size} cronologia, ${parsed.favorites.size} preferiti."
+        }
+    }
+
+    fun clearAppCache(context: Context, onComplete: (Long) -> Unit) {
+        viewModelScope.launch {
+            val freed = withContext(Dispatchers.IO) {
+                var bytes = 0L
+                fun deleteDirContent(dir: File) {
+                    dir.listFiles()?.forEach { f ->
+                        if (f.isDirectory) {
+                            deleteDirContent(f)
+                            f.delete()
+                        } else {
+                            bytes += f.length()
+                            f.delete()
+                        }
+                    }
+                }
+                deleteDirContent(context.cacheDir)
+                bytes
+            }
+            _settingsFeedback.value = "Cache svuotata con successo."
+            onComplete(freed)
+        }
+    }
 
     fun checkForUpdates(manual: Boolean = true) {
         if (_updateState.value.isChecking || _updateState.value.isDownloading) return
@@ -429,7 +519,6 @@ class AppViewModel : ViewModel() {
         val info = _updateState.value.availableUpdate ?: return
         if (_updateState.value.isDownloading) return
 
-        // Se l'APK è già stato scaricato e stavamo aspettando il permesso "Sorgenti sconosciute"
         val existingApk = _updateState.value.pendingApkFile
         if (existingApk != null && existingApk.exists()) {
             if (updater.canInstallPackages()) {
@@ -448,7 +537,7 @@ class AppViewModel : ViewModel() {
                     downloadProgress = 0f,
                     downloadedBytes = 0L,
                     totalBytes = info.sizeBytes,
-                    statusMessage = "Download aggiornamento ${info.tagName}...",
+                    statusMessage = "Download e verifica SHA-256 ${info.tagName}...",
                     needsInstallPermission = false,
                 )
             }
@@ -468,7 +557,7 @@ class AppViewModel : ViewModel() {
                         it.copy(
                             isDownloading = false,
                             pendingApkFile = apkFile,
-                            statusMessage = "Download completato, avvio installazione...",
+                            statusMessage = "Firma & SHA-256 verificati. Avvio installazione...",
                         )
                     }
                     updater.launchApkInstaller(apkFile)
@@ -487,7 +576,7 @@ class AppViewModel : ViewModel() {
                 _updateState.update {
                     it.copy(
                         isDownloading = false,
-                        statusMessage = "Errore download aggiornamento: ${err.message}",
+                        statusMessage = "Aggiornamento bloccato/fallito: ${err.message}",
                     )
                 }
             }

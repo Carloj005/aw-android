@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,13 +32,17 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.SearchFilter
 import com.carloj005.awanime.ui.SearchUiState
 import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.components.ErrorRetryBox
@@ -64,12 +70,24 @@ import com.carloj005.awanime.ui.theme.StarAmber
 fun SearchScreen(
     state: SearchUiState,
     onQueryChange: (String) -> Unit,
+    onFilterChange: (SearchFilter) -> Unit,
     onSearchSubmit: (String) -> Unit,
+    onClearRecent: () -> Unit,
     onAnimeClick: (AnimeItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val cs = MaterialTheme.colorScheme
+
+    val filteredResults = remember(state.results, state.filter) {
+        when (state.filter) {
+            SearchFilter.ALL -> state.results
+            SearchFilter.SUB -> state.results.filter { !it.isDub }
+            SearchFilter.DUB -> state.results.filter { it.isDub }
+            SearchFilter.ONGOING -> state.results.filter { it.status.equals("In corso", ignoreCase = true) }
+            SearchFilter.COMPLETED -> state.results.filter { it.status.equals("Finito", ignoreCase = true) }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -120,6 +138,31 @@ fun SearchScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         )
 
+        if (state.hasSearched && state.results.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 6.dp),
+            ) {
+                items(SearchFilter.entries) { filter ->
+                    val selected = state.filter == filter
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onFilterChange(filter) },
+                        label = { Text(filter.label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium) },
+                        shape = CircleShape,
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = cs.primaryContainer,
+                            selectedLabelColor = cs.onPrimaryContainer,
+                            containerColor = cs.surfaceContainer,
+                            labelColor = cs.onSurfaceVariant,
+                        ),
+                        border = null,
+                    )
+                }
+            }
+        }
+
         when {
             state.isLoading -> {
                 LoadingPlaceholderBox(text = "Ricerca in corso (ordine cronologico)...")
@@ -131,10 +174,14 @@ fun SearchScreen(
                 }
             }
 
-            state.hasSearched && state.results.isEmpty() -> {
+            state.hasSearched && filteredResults.isEmpty() -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "Nessun risultato trovato per \"${state.query}\"",
+                        text = if (state.results.isEmpty()) {
+                            "Nessun risultato trovato per \"${state.query}\""
+                        } else {
+                            "Nessun risultato con il filtro \"${state.filter.label}\""
+                        },
                         color = cs.onSurfaceVariant,
                         fontSize = 15.sp,
                     )
@@ -144,13 +191,21 @@ fun SearchScreen(
             !state.hasSearched -> {
                 Column(modifier = Modifier.padding(16.dp)) {
                     if (state.recentQueries.isNotEmpty()) {
-                        Text(
-                            text = "Ricerche recenti",
-                            color = cs.onSurfaceVariant,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(bottom = 8.dp),
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Ricerche recenti",
+                                color = cs.onSurfaceVariant,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            TextButton(onClick = onClearRecent) {
+                                Text("Cancella", fontSize = 12.sp)
+                            }
+                        }
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -195,7 +250,7 @@ fun SearchScreen(
 
             else -> {
                 Text(
-                    text = "${state.results.size} risultati trovati (in ordine cronologico)",
+                    text = "${filteredResults.size} risultati trovati (in ordine cronologico)",
                     color = cs.onSurfaceVariant,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
@@ -206,7 +261,7 @@ fun SearchScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    items(state.results, key = { it.uniqueKey }) { anime ->
+                    items(filteredResults, key = { it.uniqueKey }) { anime ->
                         SearchResultRow(anime = anime, onClick = { onAnimeClick(anime) })
                     }
                 }

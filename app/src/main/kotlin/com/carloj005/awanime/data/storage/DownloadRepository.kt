@@ -1,6 +1,8 @@
 package com.carloj005.awanime.data.storage
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Environment
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.DownloadEntry
@@ -27,8 +29,9 @@ import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
 
 class DownloadRepository(
-    context: Context,
+    private val context: Context,
     private val client: AnimeUnityClient,
+    private val settingsRepo: SettingsRepository,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val metaFile = File(context.filesDir, "downloads.json")
@@ -70,12 +73,21 @@ class DownloadRepository(
         val entry = _downloads.value.firstOrNull { it.key == key } ?: return null
         if (entry.status != DownloadStatus.COMPLETED) return null
         val f = File(entry.filePath)
-        return if (f.exists() && f.length() > 0L) f else null
+        return if (isInsideDownloadsRoot(f) && f.exists() && f.length() > 0L) f else null
     }
 
     fun getEntry(animeId: String, isDub: Boolean, episodeNum: String): DownloadEntry? {
         val key = makeKey(animeId, isDub, episodeNum)
         return _downloads.value.firstOrNull { it.key == key }
+    }
+
+    fun isUnmeteredWifiConnected(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     }
 
     fun enqueueDownload(anime: AnimeItem, episode: EpisodeItem) {
@@ -87,6 +99,9 @@ class DownloadRepository(
 
         val safeDir = File(downloadsRoot, sanitizePathSegment(anime.title)).apply { mkdirs() }
         val targetFile = File(safeDir, "${sanitizePathSegment(anime.title)} Ep. ${sanitizePathSegment(episode.number)}.mp4")
+        if (!isInsideDownloadsRoot(targetFile)) {
+            return
+        }
 
         val initial = DownloadEntry(
             key = key,
@@ -100,14 +115,32 @@ class DownloadRepository(
             status = DownloadStatus.QUEUED,
             updatedAt = System.currentTimeMillis(),
         )
+
+        if (settingsRepo.settings.value.wifiOnlyDownloads && !isUnmeteredWifiConnected()) {
+            upsert(
+                initial.copy(
+                    status = DownloadStatus.FAILED,
+                    errorMessage = "Bloccato: opzione 'Download solo su Wi-Fi' attiva nelle Impostazioni.",
+                ),
+                persist = true,
+            )
+            return
+        }
+
         upsert(initial)
 
         val job = scope.launch {
             val tempFile = File(targetFile.parentFile, "${targetFile.name}.temp")
             try {
                 semaphore.withPermit {
+                    if (settingsRepo.settings.value.wifiOnlyDownloads && !isUnmeteredWifiConnected()) {
+                        throw IllegalStateException("Connessione Wi-Fi richiesta (opzione attiva nelle Impostazioni)")
+                    }
                     upsert(initial.copy(status = DownloadStatus.DOWNLOADING, errorMessage = null))
                     val directUrl = client.resolveDirectDownloadUrl(anime.id, episode.videoId)
+                    if (!directUrl.startsWith("https://")) {
+                        throw SecurityException("URL download non HTTPS bloccato per sicurezza")
+                    }
 
                     val req = Request.Builder()
                         .url(directUrl)
@@ -186,11 +219,28 @@ class DownloadRepository(
         activeJobs[key] = job
     }
 
+    fun retryDownload(entry: DownloadEntry) {
+        val anime = AnimeItem(
+            id = entry.animeId,
+            title = entry.animeTitle,
+            posterUrl = entry.posterUrl,
+            isDub = entry.isDub,
+            audioLabel = if (entry.isDub) "Italiano" else "Giapponese",
+        )
+        val ep = EpisodeItem(
+            number = entry.episodeNum,
+            videoId = entry.videoId,
+            language = if (entry.isDub) "ita" else "jpn",
+        )
+        enqueueDownload(anime, ep)
+    }
+
     fun cancelDownload(key: String) {
         activeJobs.remove(key)?.cancel()
         val entry = _downloads.value.firstOrNull { it.key == key }
         if (entry != null) {
-            File("${entry.filePath}.temp").delete()
+            val tmp = File("${entry.filePath}.temp")
+            if (isInsideDownloadsRoot(tmp)) tmp.delete()
         }
         removeEntryOnly(key)
     }
@@ -199,15 +249,26 @@ class DownloadRepository(
         activeJobs.remove(key)?.cancel()
         val entry = _downloads.value.firstOrNull { it.key == key }
         if (entry != null) {
-            File(entry.filePath).delete()
-            File("${entry.filePath}.temp").delete()
-            // Pulisci cartella anime se vuota
-            val parent = File(entry.filePath).parentFile
-            if (parent != null && parent.isDirectory && parent.listFiles().isNullOrEmpty()) {
-                parent.delete()
+            val f = File(entry.filePath)
+            val tmp = File("${entry.filePath}.temp")
+            if (isInsideDownloadsRoot(f)) {
+                f.delete()
+                val parent = f.parentFile
+                if (parent != null && isInsideDownloadsRoot(parent) && parent.isDirectory && parent.listFiles().isNullOrEmpty()) {
+                    parent.delete()
+                }
             }
+            if (isInsideDownloadsRoot(tmp)) tmp.delete()
         }
         removeEntryOnly(key)
+    }
+
+    private fun isInsideDownloadsRoot(file: File): Boolean {
+        return runCatching {
+            val rootCanon = downloadsRoot.canonicalPath
+            val targetCanon = file.canonicalPath
+            targetCanon == rootCanon || targetCanon.startsWith("$rootCanon${File.separator}")
+        }.getOrDefault(false)
     }
 
     private fun upsert(entry: DownloadEntry, persist: Boolean = true) {

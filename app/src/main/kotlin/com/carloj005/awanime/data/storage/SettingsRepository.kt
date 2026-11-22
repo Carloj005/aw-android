@@ -39,4 +39,8 @@ class SettingsRepository(context: Context) {
         }
         _settings.value = next
     }
+
+    fun replace(newSettings: AppSettings) {
+        update { newSettings }
+    }
 }

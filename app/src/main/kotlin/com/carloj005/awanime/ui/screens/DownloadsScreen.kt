@@ -24,10 +24,12 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Downloading
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -56,6 +58,7 @@ import com.carloj005.awanime.ui.theme.BadgeSubBlue
 fun DownloadsScreen(
     downloads: List<DownloadEntry>,
     onPlayOffline: (DownloadEntry) -> Unit,
+    onRetry: (DownloadEntry) -> Unit,
     onCancel: (String) -> Unit,
     onDelete: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -122,6 +125,7 @@ fun DownloadsScreen(
                     DownloadItemCard(
                         entry = entry,
                         onPlay = { onPlayOffline(entry) },
+                        onRetry = { onRetry(entry) },
                         onCancel = { onCancel(entry.key) },
                         onDelete = { onDelete(entry.key) },
                     )
@@ -135,6 +139,7 @@ fun DownloadsScreen(
 private fun DownloadItemCard(
     entry: DownloadEntry,
     onPlay: () -> Unit,
+    onRetry: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -251,6 +256,17 @@ private fun DownloadItemCard(
                             fontSize = 12.sp,
                             maxLines = 2,
                         )
+                        Spacer(Modifier.height(6.dp))
+                        FilledTonalButton(
+                            onClick = onRetry,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            shape = CircleShape,
+                            modifier = Modifier.height(32.dp),
+                        ) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Riprova", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }

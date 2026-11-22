@@ -20,8 +20,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -29,8 +31,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,16 +56,21 @@ import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.theme.BadgeGreen
 import com.carloj005.awanime.ui.theme.BadgeItaCoral
 import com.carloj005.awanime.ui.theme.BadgeSubBlue
+import com.carloj005.awanime.ui.theme.StarAmber
 
 @Composable
 fun HistoryScreen(
     history: List<WatchHistoryEntry>,
+    favorites: List<AnimeItem>,
     onResume: (WatchHistoryEntry) -> Unit,
     onOpenDetail: (AnimeItem) -> Unit,
-    onRemove: (String) -> Unit,
+    onRemoveHistory: (String) -> Unit,
+    onRemoveFavorite: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
+    var selectedSection by rememberSaveable { mutableIntStateOf(0) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -64,42 +78,170 @@ fun HistoryScreen(
             .padding(top = 12.dp),
     ) {
         Text(
-            text = "Cronologia",
+            text = "La mia Libreria",
             color = cs.onBackground,
             fontSize = 24.sp,
             fontWeight = FontWeight.ExtraBold,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
 
-        if (history.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Rounded.History,
-                        contentDescription = null,
-                        tint = cs.onSurfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.size(60.dp),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Text("Nessun anime nella cronologia", color = cs.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Gli episodi che guardi appariranno qui", color = cs.onSurfaceVariant, fontSize = 13.sp)
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            SegmentedButton(
+                selected = selectedSection == 0,
+                onClick = { selectedSection = 0 },
+                shape = SegmentedButtonDefaults.itemShape(0, 2),
+            ) {
+                Text("Cronologia (${history.size})", fontWeight = FontWeight.SemiBold)
+            }
+            SegmentedButton(
+                selected = selectedSection == 1,
+                onClick = { selectedSection = 1 },
+                shape = SegmentedButtonDefaults.itemShape(1, 2),
+            ) {
+                Text("Preferiti (${favorites.size})", fontWeight = FontWeight.SemiBold)
+            }
+        }
+
+        if (selectedSection == 0) {
+            if (history.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Rounded.History,
+                            contentDescription = null,
+                            tint = cs.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(60.dp),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text("Nessun anime nella cronologia", color = cs.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Gli episodi che guardi appariranno qui", color = cs.onSurfaceVariant, fontSize = 13.sp)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    items(history, key = { it.uniqueKey }) { entry ->
+                        HistoryCard(
+                            entry = entry,
+                            onResume = { onResume(entry) },
+                            onOpenDetail = { onOpenDetail(entry.anime) },
+                            onRemove = { onRemoveHistory(entry.uniqueKey) },
+                        )
+                    }
                 }
             }
         } else {
-            LazyColumn(
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                items(history, key = { it.uniqueKey }) { entry ->
-                    HistoryCard(
-                        entry = entry,
-                        onResume = { onResume(entry) },
-                        onOpenDetail = { onOpenDetail(entry.anime) },
-                        onRemove = { onRemove(entry.uniqueKey) },
-                    )
+            if (favorites.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
+                        Icon(
+                            imageVector = Icons.Rounded.FavoriteBorder,
+                            contentDescription = null,
+                            tint = cs.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(60.dp),
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text("Nessun anime nei preferiti", color = cs.onSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Tocca il cuore nella scheda di un anime per aggiungerlo", color = cs.onSurfaceVariant, fontSize = 13.sp)
+                    }
                 }
+            } else {
+                LazyColumn(
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    items(favorites, key = { "fav_${it.uniqueKey}" }) { anime ->
+                        FavoriteCard(
+                            anime = anime,
+                            onOpenDetail = { onOpenDetail(anime) },
+                            onRemove = { onRemoveFavorite(anime.uniqueKey) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FavoriteCard(
+    anime: AnimeItem,
+    onOpenDetail: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpenDetail),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = cs.surfaceContainer),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AsyncImage(
+                model = anime.displayImageUrl,
+                contentDescription = anime.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .width(70.dp)
+                    .height(100.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(cs.surfaceContainerHigh),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = anime.title,
+                    color = cs.onSurface,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BadgePill(
+                        text = if (anime.isDub) "ITA" else "SUB",
+                        backgroundColor = if (anime.isDub) BadgeItaCoral else BadgeSubBlue,
+                    )
+                    BadgePill(
+                        text = anime.status,
+                        backgroundColor = cs.surfaceContainerHigh,
+                        contentColor = cs.onSurfaceVariant,
+                    )
+                    anime.score?.let { sc ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Star, contentDescription = null, tint = StarAmber, modifier = Modifier.size(13.dp))
+                            Spacer(Modifier.width(2.dp))
+                            Text(sc, color = cs.onSurface, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+            IconButton(onClick = onRemove) {
+                Icon(
+                    Icons.Rounded.DeleteOutline,
+                    contentDescription = "Rimuovi dai preferiti",
+                    tint = cs.error,
+                )
             }
         }
     }

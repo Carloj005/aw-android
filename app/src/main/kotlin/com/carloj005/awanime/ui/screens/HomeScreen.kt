@@ -25,12 +25,14 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,10 +50,12 @@ import com.carloj005.awanime.ui.components.ErrorRetryBox
 import com.carloj005.awanime.ui.components.HeroCarouselSection
 import com.carloj005.awanime.ui.components.LoadingPlaceholderBox
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     state: HomeUiState,
     history: List<WatchHistoryEntry>,
+    favorites: List<AnimeItem>,
     hasUpdateAvailable: Boolean,
     onSelectFilter: (LatestFilter) -> Unit,
     onRefresh: () -> Unit,
@@ -160,73 +164,103 @@ fun HomeScreen(
             }
 
             else -> {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 28.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                PullToRefreshBox(
+                    isRefreshing = state.isRefreshing,
+                    onRefresh = onRefresh,
                     modifier = Modifier.fillMaxSize(),
                 ) {
-                    // Hero Carousel in evidenza nella tab "Tutti"
-                    if (state.selectedFilter == LatestFilter.ALL && state.heroCarousel.isNotEmpty()) {
-                        item(span = { GridItemSpan(2) }) {
-                            HeroCarouselSection(
-                                animes = state.heroCarousel,
-                                onWatchNow = onQuickWatch,
-                                onOpenDetail = onAnimeClick,
-                                modifier = Modifier.padding(bottom = 4.dp),
-                            )
-                        }
-                    }
-
-                    // Carosello "Continua a guardare"
-                    if (history.isNotEmpty()) {
-                        item(span = { GridItemSpan(2) }) {
-                            Column(modifier = Modifier.padding(bottom = 6.dp)) {
-                                Text(
-                                    text = "Continua a guardare",
-                                    color = cs.onBackground,
-                                    fontSize = 17.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    modifier = Modifier.padding(bottom = 10.dp),
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 28.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        // Hero Carousel in evidenza nella tab "Tutti"
+                        if (state.selectedFilter == LatestFilter.ALL && state.heroCarousel.isNotEmpty()) {
+                            item(span = { GridItemSpan(2) }) {
+                                HeroCarouselSection(
+                                    animes = state.heroCarousel,
+                                    onWatchNow = onQuickWatch,
+                                    onOpenDetail = onAnimeClick,
+                                    modifier = Modifier.padding(bottom = 4.dp),
                                 )
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    items(history.take(10), key = { it.uniqueKey }) { entry ->
-                                        ContinueWatchingCard(
-                                            entry = entry,
-                                            onResume = { onResumeHistory(entry) },
-                                            onOpenDetail = { onAnimeClick(entry.anime) },
-                                        )
+                            }
+                        }
+
+                        // Carosello "Continua a guardare"
+                        if (history.isNotEmpty()) {
+                            item(span = { GridItemSpan(2) }) {
+                                Column(modifier = Modifier.padding(bottom = 6.dp)) {
+                                    Text(
+                                        text = "Continua a guardare",
+                                        color = cs.onBackground,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(bottom = 10.dp),
+                                    )
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        items(history.take(10), key = { it.uniqueKey }) { entry ->
+                                            ContinueWatchingCard(
+                                                entry = entry,
+                                                onResume = { onResumeHistory(entry) },
+                                                onOpenDetail = { onAnimeClick(entry.anime) },
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    item(span = { GridItemSpan(2) }) {
-                        val headerText = when (state.selectedFilter) {
-                            LatestFilter.TRENDING -> "Top Anime in Tendenza"
-                            LatestFilter.DUB -> "Ultimi Episodi Doppiati (ITA)"
-                            LatestFilter.SUB -> "Ultimi Episodi SUB ITA"
-                            LatestFilter.ALL -> "Ultimi Episodi Usciti"
+                        // Carosello "I tuoi Preferiti"
+                        if (favorites.isNotEmpty()) {
+                            item(span = { GridItemSpan(2) }) {
+                                Column(modifier = Modifier.padding(bottom = 6.dp)) {
+                                    Text(
+                                        text = "I tuoi Preferiti",
+                                        color = cs.onBackground,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        modifier = Modifier.padding(bottom = 10.dp),
+                                    )
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        items(favorites.take(12), key = { "fav_${it.uniqueKey}" }) { fav ->
+                                            AnimePosterCard(
+                                                anime = fav,
+                                                onClick = { onAnimeClick(fav) },
+                                                modifier = Modifier.width(138.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        Text(
-                            text = headerText,
-                            color = cs.onBackground,
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
-                        )
-                    }
 
-                    items(
-                        items = state.items,
-                        key = { "${it.uniqueKey}_${it.latestVideoId ?: it.latestEpisodeNum ?: ""}" },
-                    ) { anime ->
-                        AnimePosterCard(
-                            anime = anime,
-                            onClick = { onAnimeClick(anime) },
-                        )
+                        item(span = { GridItemSpan(2) }) {
+                            val headerText = when (state.selectedFilter) {
+                                LatestFilter.TRENDING -> "Top Anime in Tendenza"
+                                LatestFilter.DUB -> "Ultimi Episodi Doppiati (ITA)"
+                                LatestFilter.SUB -> "Ultimi Episodi SUB ITA"
+                                LatestFilter.ALL -> "Ultimi Episodi Usciti"
+                            }
+                            Text(
+                                text = headerText,
+                                color = cs.onBackground,
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp),
+                            )
+                        }
+
+                        items(
+                            items = state.items,
+                            key = { "${it.uniqueKey}_${it.latestVideoId ?: it.latestEpisodeNum ?: ""}" },
+                        ) { anime ->
+                            AnimePosterCard(
+                                anime = anime,
+                                onClick = { onAnimeClick(anime) },
+                            )
+                        }
                     }
                 }
             }

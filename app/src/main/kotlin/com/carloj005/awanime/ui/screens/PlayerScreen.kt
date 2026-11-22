@@ -49,6 +49,7 @@ import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.SkipNext
@@ -92,6 +93,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
@@ -127,9 +133,12 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 fun PlayerScreen(
     request: PlayerLaunchRequest,
     settings: AppSettings,
+    isInPipMode: Boolean = false,
+    onEnterPip: () -> Unit = {},
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val activity = remember(context) { context.findActivity() }
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val app = AwAnimeApp.instance
@@ -241,10 +250,16 @@ fun PlayerScreen(
                     .setMaxVideoSize(3840, 2160)
             )
         }
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .setLoadControl(loadControl)
             .setTrackSelector(trackSelector)
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
             .build()
     }
 
@@ -339,6 +354,20 @@ fun PlayerScreen(
             persistCurrentProgress()
             exoPlayer.release()
         }
+    }
+
+    // Auto-pausa su ON_PAUSE quando NON siamo in Picture-in-Picture (es. schermo spento o cambio app)
+    DisposableEffect(lifecycleOwner, exoPlayer, isInPipMode) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE && !isInPipMode) {
+                persistCurrentProgress()
+                exoPlayer.pause()
+            } else if (event == Lifecycle.Event.ON_STOP) {
+                persistCurrentProgress()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     // Carica episodio + estrae timestamp VixCloud + fallback AniSkip asincrono
@@ -632,7 +661,7 @@ fun PlayerScreen(
 
         // Pillola "Annulla Auto-Skip" (quando Auto-Skip scatta automaticamente)
         AnimatedVisibility(
-            visible = undoSkipInfo != null && !isScreenLocked,
+            visible = undoSkipInfo != null && !isScreenLocked && !isInPipMode,
             enter = fadeIn() + slideInVertically { it / 2 },
             exit = fadeOut() + slideOutVertically { it / 2 },
             modifier = Modifier
@@ -669,6 +698,7 @@ fun PlayerScreen(
             !isScreenLocked &&
             !episodeDrawerOpen &&
             !outroCountdownActive &&
+            !isInPipMode &&
             errorMessage == null
 
         AnimatedVisibility(
@@ -703,7 +733,7 @@ fun PlayerScreen(
 
         // Card Stile Netflix "Prossimo Episodio tra 5s" durante l'Outro
         AnimatedVisibility(
-            visible = outroCountdownActive && hasNextEpisode && !isScreenLocked && !episodeDrawerOpen,
+            visible = outroCountdownActive && hasNextEpisode && !isScreenLocked && !episodeDrawerOpen && !isInPipMode,
             enter = fadeIn() + slideInHorizontally { it / 2 },
             exit = fadeOut() + slideOutHorizontally { it / 2 },
             modifier = Modifier
@@ -825,7 +855,7 @@ fun PlayerScreen(
 
         // OVERLAY CONTROLLI CINEMA
         AnimatedVisibility(
-            visible = controlsVisible && !isScreenLocked && !episodeDrawerOpen && errorMessage == null,
+            visible = controlsVisible && !isScreenLocked && !episodeDrawerOpen && !isInPipMode && errorMessage == null,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize(),
@@ -917,6 +947,11 @@ fun PlayerScreen(
                         onClick = { resizeIdx = (resizeIdx + 1) % resizeModes.size },
                     )
                     Spacer(Modifier.width(6.dp))
+
+                    // Picture-in-Picture (Android 8+)
+                    IconButton(onClick = onEnterPip) {
+                        Icon(Icons.Rounded.PictureInPictureAlt, contentDescription = "Picture-in-Picture", tint = Color.White)
+                    }
 
                     // Lucchetto anti-tocchi
                     IconButton(

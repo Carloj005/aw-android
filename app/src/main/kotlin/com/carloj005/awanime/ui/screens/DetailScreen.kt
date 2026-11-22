@@ -1,5 +1,7 @@
 package com.carloj005.awanime.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,11 +26,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -55,6 +63,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -80,15 +89,18 @@ import com.carloj005.awanime.ui.theme.StarAmber
 fun DetailScreen(
     state: DetailUiState,
     historyEntry: WatchHistoryEntry?,
+    isFavorite: Boolean,
     downloads: List<DownloadEntry>,
     onBack: () -> Unit,
     onRetry: (AnimeItem) -> Unit,
+    onToggleFavorite: (AnimeItem) -> Unit,
     onSwitchLanguage: (Boolean) -> Unit,
     onPlayEpisode: (AnimeItem, List<EpisodeItem>, Int) -> Unit,
     onDownloadEpisode: (AnimeItem, EpisodeItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val anime = state.anime ?: return
+    val context = LocalContext.current
     val cs = MaterialTheme.colorScheme
     var plotExpanded by remember(anime.uniqueKey) { mutableStateOf(false) }
     var selectedRangeIndex by remember(anime.uniqueKey) { mutableIntStateOf(0) }
@@ -158,19 +170,68 @@ fun DetailScreen(
                             ),
                     )
 
-                    IconButton(
-                        onClick = onBack,
+                    Row(
                         modifier = Modifier
+                            .fillMaxWidth()
                             .statusBarsPadding()
-                            .padding(12.dp)
-                            .clip(CircleShape)
-                            .background(Color(0x99000000)),
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = "Indietro",
-                            tint = Color.White,
-                        )
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(Color(0x99000000)),
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = "Indietro",
+                                tint = Color.White,
+                            )
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            IconButton(
+                                onClick = {
+                                    val shareUrl = if (anime.slug.isNotBlank()) {
+                                        "https://animeunity.cx/anime/${anime.id}-${anime.slug}"
+                                    } else {
+                                        "https://animeunity.cx/anime/${anime.id}-x"
+                                    }
+                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_SUBJECT, anime.title)
+                                        putExtra(Intent.EXTRA_TEXT, "${anime.title}\n$shareUrl")
+                                    }
+                                    runCatching {
+                                        context.startActivity(Intent.createChooser(sendIntent, "Condividi anime"))
+                                    }
+                                },
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(Color(0x99000000)),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Share,
+                                    contentDescription = "Condividi",
+                                    tint = Color.White,
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { onToggleFavorite(anime) },
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(if (isFavorite) BadgeItaCoral else Color(0x99000000)),
+                            ) {
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                    contentDescription = if (isFavorite) "Rimuovi dai preferiti" else "Aggiungi ai preferiti",
+                                    tint = Color.White,
+                                )
+                            }
+                        }
                     }
 
                     Row(
@@ -354,6 +415,48 @@ fun DetailScreen(
                                         .padding(top = 6.dp)
                                         .clickable { plotExpanded = !plotExpanded },
                                 )
+                            }
+
+                            if (anime.anilistId > 0 || anime.malId > 0) {
+                                Spacer(Modifier.height(10.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (anime.anilistId > 0) {
+                                        AssistChip(
+                                            onClick = {
+                                                runCatching {
+                                                    context.startActivity(
+                                                        Intent(Intent.ACTION_VIEW, Uri.parse("https://anilist.co/anime/${anime.anilistId}"))
+                                                    )
+                                                }
+                                            },
+                                            label = { Text("AniList", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
+                                            trailingIcon = {
+                                                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            },
+                                            shape = CircleShape,
+                                            colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainerHigh),
+                                            border = null,
+                                        )
+                                    }
+                                    if (anime.malId > 0) {
+                                        AssistChip(
+                                            onClick = {
+                                                runCatching {
+                                                    context.startActivity(
+                                                        Intent(Intent.ACTION_VIEW, Uri.parse("https://myanimelist.net/anime/${anime.malId}"))
+                                                    )
+                                                }
+                                            },
+                                            label = { Text("MyAnimeList", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
+                                            trailingIcon = {
+                                                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            },
+                                            shape = CircleShape,
+                                            colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainerHigh),
+                                            border = null,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

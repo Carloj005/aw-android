@@ -8,30 +8,39 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.Dns
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
- * Custom OkHttp DNS con fallback trasparente DNS-over-HTTPS (Cloudflare / Google)
- * contro blocchi o avvelenamenti DNS ISP italiani, filtrando rigorosamente IP privati/loopback.
+ * Custom OkHttp DNS con:
+ * - Fallback trasparente DNS-over-HTTPS (Cloudflare / Google) contro blocchi ISP
+ * - Cache con TTL (10 minuti) per evitare IP stantii dopo rotazione CDN
+ * - Protezione anti-SSRF / anti-DNS-rebinding su IPv4 e IPv6 (blocca loopback, privati, link-local, ULA, CGNAT)
  */
 class DohFallbackDns : Dns {
-    private val cache = ConcurrentHashMap<String, List<InetAddress>>()
+    private data class CachedEntry(val addresses: List<InetAddress>, val expiresAtMs: Long)
+
+    private val cache = ConcurrentHashMap<String, CachedEntry>()
     private val json = Json { ignoreUnknownKeys = true }
     private val dohClient = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(4, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
         .build()
 
     private val targetKeywords = listOf(
         "animeunity.",
         "vixcloud.",
         "vix-content.",
+        "vixsrc.",
     )
 
     private val dohEndpoints = listOf(
@@ -41,24 +50,27 @@ class DohFallbackDns : Dns {
     )
 
     override fun lookup(hostname: String): List<InetAddress> {
-        val lower = hostname.lowercase()
+        val lower = hostname.trim().lowercase()
         val isTarget = targetKeywords.any { it in lower }
+        val now = System.currentTimeMillis()
 
         if (isTarget) {
-            cache[lower]?.let { return it }
+            cache[lower]?.takeIf { it.expiresAtMs > now }?.let { return it.addresses }
         }
 
         try {
             val system = Dns.SYSTEM.lookup(hostname)
-            if (isTarget && system.isNotEmpty()) {
-                val poisoned = system.all { addr ->
-                    addr.isLoopbackAddress || addr.isAnyLocalAddress || addr.isSiteLocalAddress
-                }
-                if (poisoned) {
-                    resolveViaDoh(lower)?.let { return it }
-                }
+            val publicOnly = system.filter { isGlobalPublicAddress(it) }
+            if (isTarget && (publicOnly.isEmpty() || publicOnly.size < system.size)) {
+                resolveViaDoh(lower)?.let { return it }
             }
-            return system
+            if (publicOnly.isNotEmpty()) {
+                return publicOnly
+            }
+            if (isTarget) {
+                resolveViaDoh(lower)?.let { return it }
+            }
+            throw UnknownHostException("Risoluzione DNS bloccata: nessun IP pubblico valido per $hostname")
         } catch (e: UnknownHostException) {
             if (isTarget) {
                 resolveViaDoh(lower)?.let { return it }
@@ -68,10 +80,16 @@ class DohFallbackDns : Dns {
     }
 
     private fun resolveViaDoh(hostname: String): List<InetAddress>? {
+        if (!SAFE_HOSTNAME_REGEX.matches(hostname)) return null
         for (endpoint in dohEndpoints) {
             try {
+                val base = endpoint.toHttpUrlOrNull() ?: continue
+                val url = base.newBuilder()
+                    .addQueryParameter("name", hostname)
+                    .addQueryParameter("type", "A")
+                    .build()
                 val req = Request.Builder()
-                    .url("$endpoint?name=$hostname&type=A")
+                    .url(url)
                     .header("Accept", "application/dns-json")
                     .build()
                 dohClient.newCall(req).execute().use { resp ->
@@ -88,7 +106,7 @@ class DohFallbackDns : Dns {
                         }
                     }
                     if (resolved.isNotEmpty()) {
-                        cache[hostname] = resolved
+                        cache[hostname] = CachedEntry(resolved, System.currentTimeMillis() + CACHE_TTL_MS)
                         return resolved
                     }
                 }
@@ -100,6 +118,17 @@ class DohFallbackDns : Dns {
     }
 
     companion object {
+        private const val CACHE_TTL_MS = 10 * 60 * 1000L
+        private val SAFE_HOSTNAME_REGEX = Regex("""^[a-z0-9.-]{1,253}$""")
+
+        fun isGlobalPublicAddress(addr: InetAddress): Boolean {
+            return when (addr) {
+                is Inet4Address -> isGlobalPublicIpv4(addr)
+                is Inet6Address -> isGlobalPublicIpv6(addr)
+                else -> false
+            }
+        }
+
         fun isGlobalPublicIpv4(addr: Inet4Address): Boolean {
             if (addr.isLoopbackAddress || addr.isAnyLocalAddress || addr.isLinkLocalAddress ||
                 addr.isSiteLocalAddress || addr.isMulticastAddress
@@ -109,16 +138,36 @@ class DohFallbackDns : Dns {
             val b = addr.address
             val b0 = b[0].toInt() and 0xFF
             val b1 = b[1].toInt() and 0xFF
-            // Blocca CGNAT 100.64.0.0/10 e riservati 0.0.0.0/8, 240.0.0.0/4
+            // Blocca 0.0.0.0/8, CGNAT 100.64.0.0/10, benchmark 198.18.0.0/15, multicast/riservati >= 224
             if (b0 == 0 || b0 >= 224) return false
             if (b0 == 100 && b1 in 64..127) return false
+            if (b0 == 198 && (b1 == 18 || b1 == 19)) return false
+            return true
+        }
+
+        fun isGlobalPublicIpv6(addr: Inet6Address): Boolean {
+            if (addr.isLoopbackAddress || addr.isAnyLocalAddress || addr.isLinkLocalAddress ||
+                addr.isSiteLocalAddress || addr.isMulticastAddress
+            ) {
+                return false
+            }
+            val b = addr.address
+            val b0 = b[0].toInt() and 0xFF
+            val b1 = b[1].toInt() and 0xFF
+            // Blocca Unique Local Address (fc00::/7) e IPv4-mapped privati
+            if ((b0 and 0xFE) == 0xFC) return false
+            // Blocca documentation prefix 2001:db8::/32
+            if (b0 == 0x20 && b1 == 0x01 && (b[2].toInt() and 0xFF) == 0x0D && (b[3].toInt() and 0xFF) == 0xB8) {
+                return false
+            }
             return true
         }
     }
 }
 
 /**
- * CookieJar in memoria thread-safe per mantenere la sessione Laravel (`XSRF-TOKEN`, `animeunity_session`).
+ * CookieJar in memoria thread-safe per mantenere la sessione Laravel (`XSRF-TOKEN`, `animeunity_session`),
+ * isolata strettamente sui domini di origine.
  */
 class MemoryCookieJar : CookieJar {
     private val store = ConcurrentHashMap<String, MutableList<Cookie>>()

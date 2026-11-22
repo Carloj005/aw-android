@@ -11,6 +11,15 @@ enum class LatestFilter(val label: String) {
 }
 
 @Serializable
+enum class SearchFilter(val label: String) {
+    ALL("Tutti"),
+    SUB("SUB"),
+    DUB("ITA"),
+    ONGOING("In corso"),
+    COMPLETED("Finiti"),
+}
+
+@Serializable
 enum class ThemeMode(val label: String) {
     SYSTEM("Sistema"),
     DARK("Scuro"),
@@ -24,6 +33,9 @@ data class AppSettings(
     val autoSkipIntro: Boolean = false,
     val autoSkipOutro: Boolean = false,
     val autoCheckUpdates: Boolean = true,
+    val wifiOnlyDownloads: Boolean = false,
+    val autoPipEnabled: Boolean = true,
+    val recentQueries: List<String> = emptyList(),
 )
 
 @Serializable
@@ -181,8 +193,18 @@ data class UpdateInfo(
     val tagName: String,
     val changelog: String,
     val downloadUrl: String,
+    val sha256Url: String? = null,
     val sizeBytes: Long,
     val htmlUrl: String,
+)
+
+@Serializable
+data class AppBackupData(
+    val schemaVersion: Int = 1,
+    val exportedAt: Long = System.currentTimeMillis(),
+    val settings: AppSettings = AppSettings(),
+    val history: List<WatchHistoryEntry> = emptyList(),
+    val favorites: List<AnimeItem> = emptyList(),
 )
 
 fun formatTimeMs(ms: Long): String {

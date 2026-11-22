@@ -2,25 +2,25 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
-## Novità v1.1.0 & Funzionalità principali
-- **Smart Skip OP/ED (stile Netflix)**:
-  - Rilevamento automatico dei timestamp reali direttamente dallo stream **VixCloud** (`intro`, `outro`, `recap`) con fallback automatico su **AniSkip API v2** (via `mal_id`).
-  - Pulsante fluttuante **"Salta Sigla"** / **"Salta Outro"** / **"Salta Recap"** visibile nell'intervallo reale della sigla (anche con controlli nascosti).
-  - Supporto opzionale **Auto-Skip OP/ED** attivabile dalle Impostazioni con pulsante **"Annulla"** per tornare indietro.
-  - Fallback manuale `+85s` mostrato solo se nessun timestamp è disponibile.
-- **Interfaccia Material You 3 Expressive**:
-  - Supporto completo **Colori Dinamici Android 12+** (`dynamicDarkColorScheme` / `dynamicLightColorScheme`) attivo di default con tema automatico **Sistema / Scuro / Chiaro**.
-  - Nuovo **Hero Carousel** full-bleed in Home, card arrotondate Material 3, badge qualità/lingua e schermata **Impostazioni**.
-- **Player Video Nativo Potenziato (Media3 / ExoPlayer)**:
-  - Streaming **1080p FHD HLS** alla massima qualità con buffer ottimizzato per skip rapidi senza blocchi.
-  - **Gesture verticali**: swipe sinistro per Luminosità, swipe destro per Volume media con HUD animato.
-  - **Pannello Episodi in-player**, **Blocco Schermo** anti-tocchi accidentali, card countdown **"Prossimo episodio tra 5s"** durante l'outro, doppio tap `-10s` / `+10s`, velocità (`0.75x`–`2.0x`) e aspect ratio.
-- **Nuova Icona Anime + Icone a Tema (Android 13+)**:
-  - Icona adattiva ispirata alla cultura giapponese (**Torii Gate + Sole + Play**) con livello dedicato `<monochrome>` per **Icone a tema / Material You**.
-- **Aggiornamenti Automatici In-App (GitHub Releases)**:
-  - Controllo automatico dell'ultima release da `Carloj005/aw-android` all'avvio e dalle Impostazioni, download diretto dell'APK con barra di avanzamento e avvio dell'installer nativo Android via `FileProvider`.
-- **Ricerca, Cronologia & Download Offline**:
-  - Ricerca tollerante ai refusi con ordinamento cronologico delle stagioni (SUB prima di ITA), cronologia atomica locale (`history.json`), download MP4 1080p offline e rete resiliente con DNS-over-HTTPS automatico.
+## Novità v1.2.0 — Sicurezza, Qualità & Nuove Funzionalità
+### 🔒 Hardening & Sicurezza
+- **Aggiornamenti verificati crittograficamente**: l'updater controlla solo host HTTPS fidati GitHub, verifica il checksum **SHA-256** del file `.apk.sha256` pubblicato nella release e controlla tramite `PackageManager` che il **certificato di firma digitale** dell'APK scaricato coincida con quello dell'app installata prima ancora di aprire l'installer Android.
+- **HTTPS Strict + Network Security Config**: traffico in chiaro (`http://`) bloccato a livello OS e OkHttp, fiducia solo alle CA di sistema (nessun certificato utente MITM).
+- **DNS-over-HTTPS anti-SSRF IPv4 + IPv6** con cache a TTL (10 min) e blocco rigoroso di indirizzi privati, loopback, link-local, ULA e CGNAT.
+- **Isolamento cookie & allowlist domini**: client OkHttp separato senza cookie per domini terzi (`VixCloud`, `AniSkip`), validazione stretta di origini `animeunity.*` / `vixcloud.*` e controllo canonical path-traversal sui download.
+- **R8 Minification & Resource Shrinking**: build Release offuscata, alleggerita e priva di log di debug, con regole di backup controllate (`backup_rules.xml` / `data_extraction_rules.xml`).
+
+### ✨ Nuove Funzionalità & Miglioramenti
+- **Preferiti / La mia Libreria**: aggiungi anime ai preferiti con il tasto cuore, carosello dedicato in Home e tab **Libreria** unificata (**Cronologia** + **Preferiti**).
+- **Picture-in-Picture (PiP) nativo Android** + **Audio Focus & pausa automatica** allo scollegamento cuffie Bluetooth/cavo e al passaggio in background.
+- **Backup & Ripristino Locale (JSON)**: esporta e importa Cronologia, Preferiti e Impostazioni in un clic via Storage Access Framework (zero account richiesti).
+- **Ricerca & UX**: **Pull-to-Refresh** nativo in Home, filtri rapidi sui risultati di ricerca (`Tutti`, `SUB`, `ITA`, `In corso`, `Finiti`), cronologia ricerche persistente, tasto **Riprova** sui download falliti, **Download solo su Wi-Fi**, pulizia cache, pulsante **Condividi** e link esterni **AniList / MyAnimeList**.
+
+## Funzionalità Core (`v1.0` – `v1.1`)
+- **Smart Skip OP/ED (stile Netflix)** con timestamp reali VixCloud + fallback AniSkip API v2, pulsante fluttuante **"Salta Sigla"** e Auto-Skip opzionale con **"Annulla"**.
+- **Material You 3 Expressive** (colori dinamici Android 12+, tema Sistema/Scuro/Chiaro, Hero Carousel) e **nuova icona Torii + Play** con supporto Android 13+ **Icone a tema** (`<monochrome>`).
+- **Player 1080p FHD HLS** con swipe verticali Luminosità/Volume, Drawer Episodi, Blocco Schermo e countdown **"Prossimo episodio tra 5s"**.
+- **Aggiornamenti Automatici In-App** da GitHub Releases (`Carloj005/aw-android`).
 
 ## Compilazione APK in locale
 ```powershell
@@ -29,23 +29,3 @@ App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media
 Gli APK vengono generati in:
 - `app/build/outputs/apk/debug/app-debug.apk`
 - `app/build/outputs/apk/release/app-release.apk`
-
-Se è presente `~/.aw-android-signing/signing.properties` (o le variabili ambiente `KEYSTORE_FILE`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`), la build `release` viene firmata automaticamente con la chiave persistente così gli aggiornamenti futuri mantengono tutti i dati.
-
-## Pubblicazione Automatica Release su GitHub
-Il workflow [`.github/workflows/release.yml`](.github/workflows/release.yml) compila, testa e pubblica automaticamente l'APK firmato su GitHub Releases ad ogni push di tag `v*` (es. `v1.1.0`, `v1.2.0`).
-
-Configura i 4 **Repository Secrets** su GitHub (`Settings -> Secrets and variables -> Actions`):
-- `KEYSTORE_BASE64`: il file `.jks` codificato in Base64
-- `KEYSTORE_PASSWORD`: password del keystore
-- `KEY_ALIAS`: alias della chiave (es. `aw-anime`)
-- `KEY_PASSWORD`: password della chiave
-
-Per rilasciare una nuova versione:
-1. Incrementa `versionCode` e `versionName` in `app/build.gradle.kts`.
-2. Fai commit, crea il tag e pusha:
-   ```bash
-   git tag v1.2.0
-   git push origin main --tags
-   ```
-3. L'app rileverà automaticamente il nuovo aggiornamento alla prossima apertura.

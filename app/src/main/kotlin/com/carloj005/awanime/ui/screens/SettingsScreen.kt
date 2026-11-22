@@ -20,9 +20,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CleaningServices
+import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.FastForward
+import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -37,32 +43,56 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.carloj005.awanime.BuildConfig
 import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.ThemeMode
+import com.carloj005.awanime.data.model.formatBytes
 import com.carloj005.awanime.ui.UpdateUiState
+import java.io.File
+
+private fun computeDirBytes(dir: File): Long {
+    var total = 0L
+    dir.listFiles()?.forEach { f ->
+        total += if (f.isDirectory) computeDirBytes(f) else f.length()
+    }
+    return total
+}
 
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
     updateState: UpdateUiState,
+    feedbackMessage: String?,
     onBack: () -> Unit,
     onThemeModeChange: (ThemeMode) -> Unit,
     onDynamicColorsChange: (Boolean) -> Unit,
     onAutoSkipIntroChange: (Boolean) -> Unit,
     onAutoSkipOutroChange: (Boolean) -> Unit,
+    onAutoPipChange: (Boolean) -> Unit,
+    onWifiOnlyDownloadsChange: (Boolean) -> Unit,
     onAutoCheckUpdatesChange: (Boolean) -> Unit,
     onCheckUpdatesNow: () -> Unit,
     onOpenUpdateDialog: () -> Unit,
+    onExportBackup: () -> Unit,
+    onImportBackup: () -> Unit,
+    onClearCache: ((Long) -> Unit) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    var cacheBytes by remember { mutableLongStateOf(computeDirBytes(context.cacheDir)) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -92,6 +122,24 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
+            if (!feedbackMessage.isNullOrBlank()) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = cs.primaryContainer),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = feedbackMessage,
+                            color = cs.onPrimaryContainer,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(14.dp),
+                        )
+                    }
+                }
+            }
+
             // 1. Aspetto Material You 3 Expressive
             item {
                 SettingsSectionCard(
@@ -129,7 +177,7 @@ fun SettingsScreen(
                 }
             }
 
-            // 2. Smart Skip OP / ED
+            // 2. Smart Skip OP / ED & PiP
             item {
                 SettingsSectionCard(
                     title = "Player & Salta Sigla Intelligente",
@@ -148,39 +196,118 @@ fun SettingsScreen(
                         checked = settings.autoSkipOutro,
                         onCheckedChange = onAutoSkipOutroChange,
                     )
+                    Spacer(Modifier.height(12.dp))
+                    SettingsSwitchRow(
+                        title = "Picture-in-Picture automatico (PiP)",
+                        subtitle = "Continua in finestra flottante quando torni alla Home durante la visione",
+                        checked = settings.autoPipEnabled,
+                        onCheckedChange = onAutoPipChange,
+                    )
                 }
             }
 
-            // 3. Aggiornamenti Automatici (GitHub Releases)
+            // 3. Rete, Download & Cache
             item {
                 SettingsSectionCard(
-                    title = "Aggiornamenti Automatici",
-                    icon = Icons.Rounded.SystemUpdate,
+                    title = "Rete, Download & Memoria",
+                    icon = Icons.Rounded.Wifi,
                 ) {
+                    SettingsSwitchRow(
+                        title = "Download solo su Wi-Fi",
+                        subtitle = "Impedisce i download MP4 1080p su rete dati mobile",
+                        checked = settings.wifiOnlyDownloads,
+                        onCheckedChange = onWifiOnlyDownloadsChange,
+                    )
+                    Spacer(Modifier.height(14.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Cache locale app", color = cs.onSurface, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                             Text(
-                                text = "Versione installata: v${BuildConfig.VERSION_NAME}",
-                                color = cs.onSurface,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                            )
-                            Text(
-                                text = "Canale: github.com/${BuildConfig.GITHUB_REPO}",
+                                text = "Immagini e APK temporanei: ${formatBytes(cacheBytes)}",
                                 color = cs.onSurfaceVariant,
                                 fontSize = 12.sp,
                             )
                         }
+                        FilledTonalButton(
+                            onClick = {
+                                onClearCache {
+                                    cacheBytes = computeDirBytes(context.cacheDir)
+                                }
+                            },
+                            shape = CircleShape,
+                        ) {
+                            Icon(Icons.Rounded.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Svuota")
+                        }
+                    }
+                }
+            }
+
+            // 4. Backup & Ripristino Dati Locale
+            item {
+                SettingsSectionCard(
+                    title = "Backup & Ripristino (Locale)",
+                    icon = Icons.Rounded.CloudDone,
+                ) {
+                    Text(
+                        text = "Esporta o ripristina Cronologia, Preferiti e Impostazioni in un file JSON senza bisogno di account.",
+                        color = cs.onSurfaceVariant,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FilledTonalButton(
+                            onClick = onExportBackup,
+                            shape = CircleShape,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Rounded.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Esporta JSON", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        FilledTonalButton(
+                            onClick = onImportBackup,
+                            shape = CircleShape,
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Icon(Icons.Rounded.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Importa JSON", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+
+            // 5. Aggiornamenti Automatici (GitHub Releases)
+            item {
+                SettingsSectionCard(
+                    title = "Aggiornamenti Automatici",
+                    icon = Icons.Rounded.SystemUpdate,
+                ) {
+                    Column {
+                        Text(
+                            text = "Versione installata: v${BuildConfig.VERSION_NAME}",
+                            color = cs.onSurface,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            text = "Canale: github.com/${BuildConfig.GITHUB_REPO}",
+                            color = cs.onSurfaceVariant,
+                            fontSize = 12.sp,
+                        )
                     }
 
                     Spacer(Modifier.height(12.dp))
                     SettingsSwitchRow(
                         title = "Controllo automatico all'avvio",
-                        subtitle = "Verifica nuove release APK su GitHub quando apri l'app",
+                        subtitle = "Verifica nuove release APK firmate + SHA-256 su GitHub",
                         checked = settings.autoCheckUpdates,
                         onCheckedChange = onAutoCheckUpdatesChange,
                     )
@@ -222,6 +349,27 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            // 6. Sicurezza & Privacy
+            item {
+                SettingsSectionCard(
+                    title = "Sicurezza & Privacy",
+                    icon = Icons.Rounded.Security,
+                ) {
+                    Text(
+                        text = "• Connessioni esclusivamente HTTPS (TLS di sistema, HTTP bloccato)\n" +
+                            "• DNS-over-HTTPS automatico con filtro anti-SSRF IPv4/IPv6\n" +
+                            "• Aggiornamenti verificati tramite SHA-256 + firma certificato APK\n" +
+                            "• Client isolato senza cookie verso servizi terzi (VixCloud / AniSkip)\n" +
+                            "• Zero pubblicità, zero tracker: dati salvati solo sul dispositivo",
+                        color = cs.onSurfaceVariant,
+                        fontSize = 12.sp,
+                        lineHeight = 19.sp,
+                    )
+                }
+            }
+
+            item { Spacer(Modifier.height(16.dp)) }
         }
     }
 }

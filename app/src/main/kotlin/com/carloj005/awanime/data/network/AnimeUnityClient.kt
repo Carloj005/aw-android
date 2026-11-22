@@ -97,6 +97,22 @@ class AnimeUnityClient(context: Context?) {
                 .replace("&lt;", "<")
                 .replace("&gt;", ">")
         }
+
+        fun isTrustedAnimeUnityOrigin(rawUrl: String): Boolean {
+            val parsed = rawUrl.trim().toHttpUrlOrNull() ?: return false
+            if (parsed.scheme != "https") return false
+            val host = parsed.host.lowercase()
+            return Regex("""^(?:www\.)?animeunity\.[a-z]{2,10}$""").matches(host)
+        }
+
+        fun isTrustedEmbedUrl(rawUrl: String): Boolean {
+            val parsed = rawUrl.trim().toHttpUrlOrNull() ?: return false
+            if (parsed.scheme != "https") return false
+            val host = parsed.host.lowercase()
+            return host == "vixcloud.cc" || host.endsWith(".vixcloud.cc") ||
+                host.contains("vixcloud.") || host.contains("vix-content.") ||
+                host.contains("vixsrc.") || isTrustedAnimeUnityOrigin(rawUrl)
+        }
     }
 
     private val prefs = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -107,7 +123,7 @@ class AnimeUnityClient(context: Context?) {
 
     @Volatile
     var baseUrl: String = prefs?.getString(KEY_BASE_URL, DEFAULT_BASE_URL)
-        ?.takeIf { it.startsWith("https://") }
+        ?.takeIf { isTrustedAnimeUnityOrigin(it) }
         ?: DEFAULT_BASE_URL
         private set
 
@@ -120,14 +136,33 @@ class AnimeUnityClient(context: Context?) {
     @Volatile
     private var cachedHeroCarousel: List<AnimeItem> = emptyList()
 
+    private val httpsOnlyInterceptor = okhttp3.Interceptor { chain ->
+        val req = chain.request()
+        if (req.url.scheme != "https") {
+            throw IOException("Connessione HTTP non cifrata bloccata: ${req.url.host}")
+        }
+        chain.proceed(req)
+    }
+
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .dns(dohDns)
         .cookieJar(cookieJar)
+        .addInterceptor(httpsOnlyInterceptor)
         .followRedirects(true)
-        .followSslRedirects(true)
+        .followSslRedirects(false)
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    /** Client isolato SENZA cookie di sessione AnimeUnity per chiamate a domini terzi (VixCloud, AniSkip). */
+    val externalOkHttpClient: OkHttpClient = OkHttpClient.Builder()
+        .dns(dohDns)
+        .addInterceptor(httpsOnlyInterceptor)
+        .followRedirects(true)
+        .followSslRedirects(false)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(18, TimeUnit.SECONDS)
         .build()
 
     val noRedirectClient: OkHttpClient = okHttpClient.newBuilder()
@@ -135,18 +170,21 @@ class AnimeUnityClient(context: Context?) {
         .followSslRedirects(false)
         .build()
 
-    /** OkHttpClient dedicato a ExoPlayer e Coil (con DNS-over-HTTPS per aggirare blocchi ISP). */
+    /** OkHttpClient dedicato a ExoPlayer e download video (senza cookie, HTTPS-only + DoH). */
     val mediaOkHttpClient: OkHttpClient = OkHttpClient.Builder()
         .dns(dohDns)
+        .addInterceptor(httpsOnlyInterceptor)
         .followRedirects(true)
-        .followSslRedirects(true)
+        .followSslRedirects(false)
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
     val imageOkHttpClient: OkHttpClient = OkHttpClient.Builder()
         .dns(dohDns)
+        .addInterceptor(httpsOnlyInterceptor)
         .followRedirects(true)
+        .followSslRedirects(false)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
@@ -180,6 +218,7 @@ class AnimeUnityClient(context: Context?) {
                         val body = resp.body?.string().orEmpty()
                         if (resp.isSuccessful && isValidAnimeUnityHtml(body)) {
                             val finalOrigin = "${resp.request.url.scheme}://${resp.request.url.host}"
+                            if (!isTrustedAnimeUnityOrigin(finalOrigin)) continue
                             baseUrl = finalOrigin
                             prefs?.edit()?.putString(KEY_BASE_URL, finalOrigin)?.apply()
                             val page = extractInertiaPage(body)
@@ -477,8 +516,8 @@ class AnimeUnityClient(context: Context?) {
             partialData = listOf("embedUrl", "video"),
         )
         val embedUrl = pageData["props"]?.jsonObject?.str("embedUrl")?.trim()
-            ?.takeIf { it.startsWith("http") }
-            ?: throw IOException("embedUrl VixCloud non trovato per questo episodio")
+            ?.takeIf { isTrustedEmbedUrl(it) }
+            ?: throw IOException("embedUrl VixCloud non valido o non trovato per questo episodio")
 
         val embedReq = Request.Builder()
             .url(embedUrl)
@@ -486,7 +525,7 @@ class AnimeUnityClient(context: Context?) {
             .header("Referer", "$baseUrl/")
             .build()
 
-        val embedHtml = okHttpClient.newCall(embedReq).execute().use { resp ->
+        val embedHtml = externalOkHttpClient.newCall(embedReq).execute().use { resp ->
             if (!resp.isSuccessful) {
                 throw IOException("Errore VixCloud embed HTTP ${resp.code}")
             }
@@ -591,7 +630,7 @@ class AnimeUnityClient(context: Context?) {
                 .header("User-Agent", USER_AGENT)
                 .header("Accept", "application/json")
                 .build()
-            val fastClient = okHttpClient.newBuilder()
+            val fastClient = externalOkHttpClient.newBuilder()
                 .connectTimeout(4, TimeUnit.SECONDS)
                 .readTimeout(4, TimeUnit.SECONDS)
                 .build()
@@ -636,7 +675,7 @@ class AnimeUnityClient(context: Context?) {
                     .build()
                 noRedirectClient.newCall(req).execute().use { resp ->
                     val location = resp.header("Location")?.trim()
-                    if (resp.code in 300..399 && !location.isNullOrBlank() && location.startsWith("http")) {
+                    if (resp.code in 300..399 && !location.isNullOrBlank() && location.startsWith("https://")) {
                         return@withContext location
                     }
                 }
@@ -653,7 +692,7 @@ class AnimeUnityClient(context: Context?) {
     private fun extractDirectDownloadUrl(page: String): String? {
         val m = Regex("""window\.downloadUrl\s*=\s*(['"])(.*?)\1""", RegexOption.DOT_MATCHES_ALL).find(page)
         val url = m?.groupValues?.getOrNull(2)?.trim()
-        return url?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        return url?.takeIf { it.startsWith("https://") }
     }
 
     private fun extractHlsMasterUrl(page: String): String? {
@@ -694,7 +733,7 @@ class AnimeUnityClient(context: Context?) {
                 .header("User-Agent", USER_AGENT)
                 .header("Referer", "https://vixcloud.cc/")
                 .build()
-            okHttpClient.newCall(req).execute().use { resp ->
+            externalOkHttpClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val text = resp.body?.string().orEmpty()
                 if (!text.trimStart().startsWith("#EXTM3U")) return null

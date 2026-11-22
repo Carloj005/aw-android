@@ -33,8 +33,8 @@ android {
     applicationId = "com.carloj005.awanime"
     minSdk = 26
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1.0"
+    versionCode = 3
+    versionName = "1.2.0"
     buildConfigField("String", "GITHUB_REPO", "\"Carloj005/aw-android\"")
   }
 
@@ -51,7 +51,8 @@ android {
 
   buildTypes {
     release {
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = if (hasReleaseSigning) {
         signingConfigs.getByName("release")
