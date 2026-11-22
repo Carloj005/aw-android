@@ -205,9 +205,11 @@ fun PlayerScreen(
     var hasAutoRefreshedToken by remember(currentIndex) { mutableStateOf(false) }
     var isLocalOfflineStream by remember(currentIndex) { mutableStateOf(false) }
 
-    // Smart Skip OP/ED (VixCloud native timestamps + AniSkip fallback)
+    // Smart Skip OP/ED (VixCloud native timestamps + multi-DB cross-validated fallback)
     var skipSegments by remember { mutableStateOf<List<SkipSegment>>(emptyList()) }
+    var skipFetchedWithDuration by remember(currentIndex, retryCounter) { mutableStateOf(false) }
     var autoSkippedKinds by remember(currentIndex) { mutableStateOf<Set<SkipKind>>(emptySet()) }
+    var dismissedSkipKinds by remember(currentIndex) { mutableStateOf<Set<SkipKind>>(emptySet()) }
     var undoSkipInfo by remember { mutableStateOf<Pair<String, Long>?>(null) }
 
     // Outro Next-Episode Countdown stile Netflix
@@ -451,7 +453,9 @@ fun PlayerScreen(
         errorMessage = null
         streamCandidates = emptyList()
         skipSegments = emptyList()
+        skipFetchedWithDuration = false
         autoSkippedKinds = emptySet()
+        dismissedSkipKinds = emptySet()
         undoSkipInfo = null
         outroCountdownActive = false
         outroCountdownCancelled = false
@@ -472,9 +476,10 @@ fun PlayerScreen(
             if (pendingSeekMs > 0L) exoPlayer.seekTo(pendingSeekMs)
             exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
             exoPlayer.playWhenReady = true
-            if (request.anime.malId > 0) {
-                val aniSkip = client.fetchAniSkipSegments(request.anime.malId, ep.number, ep.runtimeSeconds)
-                if (aniSkip.isNotEmpty()) skipSegments = aniSkip
+            if (ep.runtimeSeconds > 0) {
+                skipFetchedWithDuration = true
+                val validated = client.fetchValidatedSkipSegments(request.anime, ep.number, ep.runtimeSeconds)
+                if (validated.isNotEmpty()) skipSegments = validated
             }
             return@LaunchedEffect
         }
@@ -500,9 +505,12 @@ fun PlayerScreen(
                 exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
                 exoPlayer.playWhenReady = true
 
-                // Se VixCloud non aveva timestamp per questo episodio, interroghiamo AniSkip in background
-                if (res.skipSegments.isEmpty() && request.anime.malId > 0) {
-                    val fallback = client.fetchAniSkipSegments(request.anime.malId, ep.number, ep.runtimeSeconds)
+                // Se VixCloud non aveva timestamp e conosciamo già la durata, eseguiamo validazione incrociata
+                if (res.skipSegments.isNotEmpty()) {
+                    skipFetchedWithDuration = true
+                } else if (ep.runtimeSeconds > 0) {
+                    skipFetchedWithDuration = true
+                    val fallback = client.fetchValidatedSkipSegments(request.anime, ep.number, ep.runtimeSeconds)
                     if (fallback.isNotEmpty()) {
                         skipSegments = fallback
                     }
@@ -514,16 +522,30 @@ fun PlayerScreen(
             }
     }
 
-    // Segmento attivo nella posizione corrente (Intro / Outro / Recap)
-    val activeSkipSegment = remember(positionMs, skipSegments) {
-        skipSegments.firstOrNull { it.contains(positionMs) }
+    // Se ep.runtimeSeconds era 0 (es. download offline o ripresa da cronologia), interroga i DB appena ExoPlayer conosce la durata reale!
+    LaunchedEffect(durationMs, currentIndex, retryCounter, skipFetchedWithDuration, isResolving) {
+        if (!isResolving && !skipFetchedWithDuration && skipSegments.isEmpty() && durationMs >= 60_000L) {
+            skipFetchedWithDuration = true
+            val realSec = (durationMs / 1000L).toInt()
+            val fallback = client.fetchValidatedSkipSegments(request.anime, currentEpisode.number, realSec)
+            if (fallback.isNotEmpty()) {
+                skipSegments = fallback
+            }
+        }
     }
 
-    // Trigger Auto-Skip se abilitato nelle Impostazioni
-    LaunchedEffect(activeSkipSegment, settings.autoSkipIntro, settings.autoSkipOutro, isPlaying) {
+    // Segmento attivo nella posizione corrente (Intro / Outro / Recap), escludendo quelli chiusi dall'utente
+    val activeSkipSegment = remember(positionMs, skipSegments, dismissedSkipKinds) {
+        skipSegments.firstOrNull { it.kind !in dismissedSkipKinds && it.contains(positionMs) }
+    }
+
+    // Trigger Auto-Skip se abilitato nelle Impostazioni (sull'Ep. 1 auto-skippa INTRO solo se verificato!)
+    LaunchedEffect(activeSkipSegment, settings.autoSkipIntro, settings.autoSkipOutro, isPlaying, currentEpisode.number) {
         val seg = activeSkipSegment ?: return@LaunchedEffect
         if (!isPlaying || seg.kind in autoSkippedKinds) return@LaunchedEffect
-        val shouldAuto = (seg.kind == SkipKind.INTRO && settings.autoSkipIntro) ||
+        val isEpisodeOne = currentEpisode.number.trim() == "1"
+        val allowIntroAuto = settings.autoSkipIntro && (seg.verified || !isEpisodeOne)
+        val shouldAuto = (seg.kind == SkipKind.INTRO && allowIntroAuto) ||
             (seg.kind == SkipKind.OUTRO && settings.autoSkipOutro)
         if (shouldAuto) {
             autoSkippedKinds = autoSkippedKinds + seg.kind
@@ -804,26 +826,45 @@ fun PlayerScreen(
             exit = fadeOut() + slideOutHorizontally { it / 2 },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 28.dp, bottom = if (controlsVisible) 96.dp else 32.dp),
+                .padding(end = 24.dp, bottom = if (controlsVisible) 96.dp else 32.dp),
         ) {
             activeSkipSegment?.let { seg ->
-                Button(
-                    onClick = { skipSegmentNow(seg, wasAuto = false) },
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White,
-                        contentColor = Color(0xFF0E1018),
-                    ),
-                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Icon(Icons.Rounded.FastForward, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = seg.kind.label,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                    )
+                    IconButton(
+                        onClick = { dismissedSkipKinds = dismissedSkipKinds + seg.kind },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xBB151826)),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Close,
+                            contentDescription = "Nascondi",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Button(
+                        onClick = { skipSegmentNow(seg, wasAuto = false) },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White,
+                            contentColor = Color(0xFF0E1018),
+                        ),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                    ) {
+                        Icon(Icons.Rounded.FastForward, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = seg.kind.label,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                        )
+                    }
                 }
             }
         }

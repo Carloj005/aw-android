@@ -10,9 +10,13 @@ import com.carloj005.awanime.data.model.SkipSegment
 import com.carloj005.awanime.data.model.StreamCandidate
 import com.carloj005.awanime.data.model.StreamResolution
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -585,7 +589,7 @@ class AnimeUnityClient(context: Context?) {
             throw IOException("Nessuno stream video disponibile per questo episodio")
         }
 
-        val skipSegments = extractVixCloudTimestamps(embedHtml)
+        val skipSegments = extractVixCloudTimestamps(embedHtml, runtimeSeconds = 0)
 
         StreamResolution(
             candidates = candidates,
@@ -597,15 +601,15 @@ class AnimeUnityClient(context: Context?) {
     }
 
     /**
-     * Estrae i timestamp reali di Intro / Outro direttamente dall'HTML embed di VixCloud
-     * (`timestamps: [{"kind":"intro","start_time":59.9,"end_time":147.9,...}, ...]`).
+     * Estrae e valida i timestamp reali di Intro / Outro direttamente dall'HTML embed di VixCloud
+     * (`timestamps: [{"kind":"intro","start_time":59.9,"end_time":147.9,"confidence":156.8,...}, ...]`).
      */
-    internal fun extractVixCloudTimestamps(embedHtml: String): List<SkipSegment> {
+    internal fun extractVixCloudTimestamps(embedHtml: String, runtimeSeconds: Int = 0): List<SkipSegment> {
         val m = Regex("""\btimestamps\s*:\s*(\[[^\]]*\])""", RegexOption.DOT_MATCHES_ALL).find(embedHtml)
             ?: return emptyList()
         val arr = runCatching { json.parseToJsonElement(m.groupValues[1]).jsonArray }.getOrNull()
             ?: return emptyList()
-        val segments = mutableListOf<SkipSegment>()
+        val raw = mutableListOf<RawSkipCandidate>()
         for (el in arr) {
             val obj = el as? JsonObject ?: continue
             val kindStr = obj.str("kind")?.lowercase() ?: continue
@@ -617,53 +621,87 @@ class AnimeUnityClient(context: Context?) {
             }
             val startSec = obj.doubleVal("start_time") ?: continue
             val endSec = obj.doubleVal("end_time") ?: continue
-            val startMs = (startSec * 1000.0).toLong().coerceAtLeast(0L)
-            val endMs = (endSec * 1000.0).toLong()
-            if (endMs > startMs + 3_000L) {
-                segments.add(
-                    SkipSegment(
-                        kind = kind,
-                        startMs = startMs,
-                        endMs = endMs,
-                        source = "vixcloud",
-                    )
+            val confidence = obj.doubleVal("confidence")
+            raw.add(
+                RawSkipCandidate(
+                    kind = kind,
+                    startMs = (startSec * 1000.0).toLong().coerceAtLeast(0L),
+                    endMs = (endSec * 1000.0).toLong(),
+                    source = "vixcloud",
+                    confidence = confidence,
                 )
-            }
+            )
         }
-        return segments.sortedBy { it.startMs }
+        return SkipTimeValidator.validateVixCloudSegments(raw, runtimeSeconds)
     }
 
     /**
-     * Fallback via AniSkip API v2 usando `malId` quando VixCloud non espone timestamp rilevati.
+     * Risolve i timestamp di Intro/Outro/Recap quando VixCloud non li espone, eseguendo in parallelo
+     * una validazione incrociata tra AniSkip v2 (durata esatta + consenso globale) e Anime-Skip GraphQL
+     * (via `anilistId` o titolo) così da eliminare falsi positivi (es. Ep. 1 senza sigla).
      */
-    suspend fun fetchAniSkipSegments(
-        malId: Int,
+    suspend fun fetchValidatedSkipSegments(
+        anime: AnimeItem,
         episodeNum: String,
         episodeLengthSeconds: Int = 0,
     ): List<SkipSegment> = withContext(Dispatchers.IO) {
-        if (malId <= 0) return@withContext emptyList()
         val epInt = episodeNum.trim().split(".", "-").firstOrNull()?.toIntOrNull()
             ?: return@withContext emptyList()
         if (epInt <= 0) return@withContext emptyList()
 
-        try {
-            val lenQuery = if (episodeLengthSeconds > 0) "&episodeLength=$episodeLengthSeconds" else "&episodeLength=0"
-            val url = "https://api.aniskip.com/v2/skip-times/$malId/$epInt?types=op&types=ed&types=recap$lenQuery"
+        val fastClient = externalOkHttpClient.newBuilder()
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(4, TimeUnit.SECONDS)
+            .build()
+
+        coroutineScope {
+            val exactDeferred = async {
+                if (anime.malId > 0 && episodeLengthSeconds > 0) {
+                    queryAniSkipRaw(fastClient, anime.malId, epInt, episodeLengthSeconds)
+                } else {
+                    emptyList()
+                }
+            }
+            val globalDeferred = async {
+                if (anime.malId > 0) {
+                    queryAniSkipRaw(fastClient, anime.malId, epInt, 0)
+                } else {
+                    emptyList()
+                }
+            }
+            val animeSkipDeferred = async {
+                queryAnimeSkipEpisode(fastClient, anime, epInt, episodeLengthSeconds)
+            }
+
+            SkipTimeValidator.reconcileCrowdsourcedSegments(
+                aniSkipExact = exactDeferred.await(),
+                aniSkipGlobal = globalDeferred.await(),
+                animeSkip = animeSkipDeferred.await(),
+                realDurationSec = episodeLengthSeconds,
+            )
+        }
+    }
+
+    private fun queryAniSkipRaw(
+        fastClient: OkHttpClient,
+        malId: Int,
+        epInt: Int,
+        episodeLengthSeconds: Int,
+    ): List<RawSkipCandidate> {
+        return try {
+            val url = "https://api.aniskip.com/v2/skip-times/$malId/$epInt" +
+                "?types=op&types=mixed-op&types=ed&types=mixed-ed&types=recap&episodeLength=$episodeLengthSeconds"
             val req = Request.Builder()
                 .url(url)
                 .header("User-Agent", USER_AGENT)
                 .header("Accept", "application/json")
                 .build()
-            val fastClient = externalOkHttpClient.newBuilder()
-                .connectTimeout(4, TimeUnit.SECONDS)
-                .readTimeout(4, TimeUnit.SECONDS)
-                .build()
             fastClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext emptyList()
+                if (!resp.isSuccessful) return emptyList()
                 val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
-                if (root.boolVal("found") != true) return@withContext emptyList()
-                val results = root["results"] as? JsonArray ?: return@withContext emptyList()
-                val list = mutableListOf<SkipSegment>()
+                if (root.boolVal("found") != true) return emptyList()
+                val results = root["results"] as? JsonArray ?: return emptyList()
+                val list = mutableListOf<RawSkipCandidate>()
                 for (el in results) {
                     val obj = el as? JsonObject ?: continue
                     val skipType = obj.str("skipType")?.lowercase() ?: continue
@@ -676,14 +714,97 @@ class AnimeUnityClient(context: Context?) {
                     val interval = obj["interval"] as? JsonObject ?: continue
                     val startMs = ((interval.doubleVal("startTime") ?: continue) * 1000.0).toLong().coerceAtLeast(0L)
                     val endMs = ((interval.doubleVal("endTime") ?: continue) * 1000.0).toLong()
-                    if (endMs > startMs + 3_000L) {
-                        list.add(SkipSegment(kind = kind, startMs = startMs, endMs = endMs, source = "aniskip"))
-                    }
+                    val dbEpLen = obj.doubleVal("episodeLength")
+                    list.add(
+                        RawSkipCandidate(
+                            kind = kind,
+                            startMs = startMs,
+                            endMs = endMs,
+                            episodeLengthSec = dbEpLen,
+                            source = "aniskip",
+                            isMixed = skipType.startsWith("mixed-"),
+                        )
+                    )
                 }
-                list.sortedBy { it.startMs }
+                list
             }
         } catch (_: Exception) {
             emptyList()
+        }
+    }
+
+    private fun queryAnimeSkipEpisode(
+        fastClient: OkHttpClient,
+        anime: AnimeItem,
+        epInt: Int,
+        realDurationSec: Int,
+    ): AnimeSkipEpisodeResult {
+        return try {
+            val graphqlEndpoint = "https://api.anime-skip.com/graphql"
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val showQuery = if (anime.anilistId > 0) {
+                """{"query":"query { findShowsByExternalId(service: ANILIST, serviceId: \"${anime.anilistId}\") { id episodes { number baseDuration timestamps { at type { name } } } } }"}"""
+            } else {
+                val cleanTitle = SearchUtils.stripDubTags(anime.title)
+                    .replace("\\", "")
+                    .replace("\"", "")
+                    .take(80)
+                if (cleanTitle.length < 3) return AnimeSkipEpisodeResult()
+                """{"query":"query { searchShows(search: \"$cleanTitle\", limit: 3) { id name episodes { number baseDuration timestamps { at type { name } } } } }"}"""
+            }
+
+            val req = Request.Builder()
+                .url(graphqlEndpoint)
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json")
+                .header("X-Client-ID", "th2oogUKrgOf1J8wMSIUPV0IpBMsLOJi")
+                .post(showQuery.toRequestBody(mediaType))
+                .build()
+
+            fastClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return AnimeSkipEpisodeResult()
+                val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                val data = root["data"] as? JsonObject ?: return AnimeSkipEpisodeResult()
+                val shows = (data["findShowsByExternalId"] ?: data["searchShows"]) as? JsonArray
+                    ?: return AnimeSkipEpisodeResult()
+
+                val targetNum = epInt.toString()
+                val matchingEps = mutableListOf<Pair<Double, List<AnimeSkipMarker>>>()
+                for (showEl in shows) {
+                    val showObj = showEl as? JsonObject ?: continue
+                    val eps = showObj["episodes"] as? JsonArray ?: continue
+                    for (epEl in eps) {
+                        val epObj = epEl as? JsonObject ?: continue
+                        if (epObj.str("number")?.trim() != targetNum) continue
+                        val baseDur = epObj.doubleVal("baseDuration") ?: continue
+                        val tsArr = epObj["timestamps"] as? JsonArray ?: continue
+                        val markers = tsArr.mapNotNull { tEl ->
+                            val tObj = tEl as? JsonObject ?: return@mapNotNull null
+                            val at = tObj.doubleVal("at") ?: return@mapNotNull null
+                            val typeName = (tObj["type"] as? JsonObject)?.str("name") ?: return@mapNotNull null
+                            AnimeSkipMarker(atSec = at, typeName = typeName)
+                        }
+                        if (markers.isNotEmpty()) {
+                            matchingEps.add(baseDur to markers)
+                        }
+                    }
+                }
+                if (matchingEps.isEmpty()) return AnimeSkipEpisodeResult()
+
+                val best = if (realDurationSec > 0) {
+                    matchingEps.minByOrNull { kotlin.math.abs(it.first - realDurationSec) }
+                } else {
+                    matchingEps.maxByOrNull { it.second.size }
+                } ?: return AnimeSkipEpisodeResult()
+
+                SkipTimeValidator.parseAnimeSkipEpisode(
+                    markers = best.second,
+                    baseDurationSec = best.first,
+                    realDurationSec = realDurationSec,
+                )
+            }
+        } catch (_: Exception) {
+            AnimeSkipEpisodeResult()
         }
     }
 

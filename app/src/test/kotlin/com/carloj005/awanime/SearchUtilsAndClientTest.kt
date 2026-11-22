@@ -6,9 +6,12 @@ import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.SkipKind
 import com.carloj005.awanime.data.model.StreamCandidate
 import com.carloj005.awanime.data.model.ThemeMode
+import com.carloj005.awanime.data.network.AnimeSkipMarker
 import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.data.network.DohFallbackDns
+import com.carloj005.awanime.data.network.RawSkipCandidate
 import com.carloj005.awanime.data.network.SearchUtils
+import com.carloj005.awanime.data.network.SkipTimeValidator
 import com.carloj005.awanime.data.update.AppUpdater
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -209,5 +212,82 @@ class SearchUtilsAndClientTest {
         assertTrue(hlsCand.isHls)
         assertFalse(hlsCand.url.endsWith(".m3u8"))
         assertFalse(mp4Cand.isHls)
+    }
+
+    @Test
+    fun skipTimeValidator_eliminatesFakeChainsawManEp1OpAndKeepsRealEd() {
+        // Real data from Chainsaw Man S1 Ep 1 (runtime 1525s, NO opening, real ED at 1434-1525s)
+        val aniExact = listOf(
+            RawSkipCandidate(SkipKind.INTRO, 363_915L, 453_915L, 1525.1, "aniskip"),
+            RawSkipCandidate(SkipKind.OUTRO, 1_434_000L, 1_527_000L, 1527.0, "aniskip"),
+        )
+        val aniGlobal = listOf(
+            RawSkipCandidate(SkipKind.INTRO, 230_719L, 320_719L, 1435.0, "aniskip"),
+            RawSkipCandidate(SkipKind.OUTRO, 1_434_000L, 1_527_000L, 1527.0, "aniskip"),
+        )
+        // Anime-Skip has dangling Intro without end marker
+        val animeSkip = SkipTimeValidator.parseAnimeSkipEpisode(
+            markers = listOf(
+                AnimeSkipMarker(0.0, "Canon"),
+                AnimeSkipMarker(87.0, "Intro"),
+            ),
+            baseDurationSec = 1525.1,
+            realDurationSec = 1525,
+        )
+
+        val resolved = SkipTimeValidator.reconcileCrowdsourcedSegments(aniExact, aniGlobal, animeSkip, 1525)
+        assertEquals(1, resolved.size)
+        assertEquals(SkipKind.OUTRO, resolved[0].kind)
+        assertEquals(1_434_000L, resolved[0].startMs)
+        assertEquals(1_525_000L, resolved[0].endMs)
+    }
+
+    @Test
+    fun skipTimeValidator_crossVerifiesValidEpisodesAndVetoesFakeEp1OpsAndEarlyEds() {
+        // 1. Solo Leveling Ep 1 (NO OP): Anime-Skip has Canon + New Credits + Preview -> vetoes AniSkip fake OP!
+        val slAni = listOf(
+            RawSkipCandidate(SkipKind.INTRO, 62_760L, 152_358L, 1420.0, "aniskip"),
+            RawSkipCandidate(SkipKind.OUTRO, 1_336_493L, 1_420_000L, 1420.0, "aniskip"),
+        )
+        val slAnimeSkip = SkipTimeValidator.parseAnimeSkipEpisode(
+            markers = listOf(
+                AnimeSkipMarker(0.0, "Canon"),
+                AnimeSkipMarker(1325.0, "New Credits"),
+                AnimeSkipMarker(1415.0, "Preview"),
+            ),
+            baseDurationSec = 1419.9,
+            realDurationSec = 1420,
+        )
+        assertTrue(slAnimeSkip.confirmsNoIntro)
+        val slResolved = SkipTimeValidator.reconcileCrowdsourcedSegments(slAni, slAni, slAnimeSkip, 1420)
+        assertTrue(slResolved.none { it.kind == SkipKind.INTRO })
+        assertTrue(slResolved.any { it.kind == SkipKind.OUTRO && it.verified })
+
+        // 2. Chainsaw Man Ep 3 (HAS OP@276s): AniSkip + Anime-Skip agree -> verified = true!
+        val csm3Ani = listOf(
+            RawSkipCandidate(SkipKind.INTRO, 276_435L, 366_435L, 1435.0, "aniskip"),
+            RawSkipCandidate(SkipKind.OUTRO, 1_344_042L, 1_434_000L, 1435.0, "aniskip"),
+        )
+        val csm3AnimeSkip = SkipTimeValidator.parseAnimeSkipEpisode(
+            markers = listOf(
+                AnimeSkipMarker(0.1, "Canon"),
+                AnimeSkipMarker(276.1, "Intro"),
+                AnimeSkipMarker(366.0, "Canon"),
+                AnimeSkipMarker(1345.0, "New Credits"),
+            ),
+            baseDurationSec = 1435.1,
+            realDurationSec = 1435,
+        )
+        val csm3Resolved = SkipTimeValidator.reconcileCrowdsourcedSegments(csm3Ani, csm3Ani, csm3AnimeSkip, 1435)
+        assertEquals(2, csm3Resolved.size)
+        assertTrue(csm3Resolved.all { it.verified })
+
+        // 3. Dandadan Ep 1 / JJK Ep 1 early fake ED (e.g. ED at 3:52 or 0:06) -> strictly rejected!
+        val earlyFakeEd = RawSkipCandidate(SkipKind.OUTRO, 232_600L, 322_600L, 1435.0, "aniskip")
+        assertFalse(SkipTimeValidator.isStructurallyValid(earlyFakeEd, 1435))
+
+        // 4. Wrong cut episodeLength drift (Frieren Ep 1: DB 1560s vs real 1680s) -> strictly rejected!
+        val wrongCut = RawSkipCandidate(SkipKind.INTRO, 3_200L, 93_200L, 1559.9, "aniskip")
+        assertFalse(SkipTimeValidator.isStructurallyValid(wrongCut, 1680))
     }
 }

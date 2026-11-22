@@ -51,6 +51,7 @@ data class SkipSegment(
     val startMs: Long,
     val endMs: Long,
     val source: String = "vixcloud",
+    val verified: Boolean = true,
 ) {
     fun contains(positionMs: Long): Boolean = positionMs in startMs..(endMs - 800L).coerceAtLeast(startMs)
 }

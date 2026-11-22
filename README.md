@@ -2,6 +2,12 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.2.2 — Motore Smart Skip Universale Multi-Sorgente
+- **Fix definitivo falsi "Salta Sigla" su qualsiasi anime** (es. Ep. 1 senza sigla come *Chainsaw Man*, *Solo Leveling*, *Frieren*, *Demon Slayer*, o falsi ED precoci):
+  - Nuovo motore `SkipTimeValidator` con **validazione incrociata in parallelo** tra **VixCloud** (priorità 1, audio-fingerprinted), **AniSkip v2** (durata esatta + consenso globale) e **Anime-Skip GraphQL** (lookup esatto tramite `anilistId`).
+  - Controllo rigoroso sulla durata reale dell'episodio (`±12s`), eliminazione automatica di auto-conflitti, veto su episodi senza sigla e limiti strutturali/posizionali su Intro, Outro e Recap.
+  - Su Ep. 1 con sorgente non verificata l'Auto-Skip non scatta alla cieca (mostra il tasto manuale) e il pulsante fluttuante **"Salta Sigla"** ora include una rapida **`✕`** per nasconderlo con 1 tocco.
+
 ## Novità v1.2.1 — Fix Definitivo Skip Rapidi HLS & Bugfix Suite
 - **Fix critico streaming HLS reale (stop fallback MP4 + HTTP 503)**: impostato esplicitamente `MimeTypes.APPLICATION_M3U8` sugli URL `/playlist/<id>` di VixCloud (privi di estensione `.m3u8`) così Media3 usa davvero **`HlsMediaSource`** su `au-u1-01` (limite 16 connessioni) invece di ricadere di nascosto sull'MP4 (`au-d1-01`, limite 2 connessioni → `HTTP 503` dopo skip rapidi).
 - **`ResilientStreamErrorPolicy` + auto-refresh token**: fino a 5 retry con backoff su `HTTP 503`/`429`, pool connessioni dedicato separato dai download in background, rinnovo automatico singolo del token conservando il minutaggio esatto e codice HTTP mostrato chiaramente in caso di errore.
