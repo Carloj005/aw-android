@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+  <defs>
+    <clipPath id="r">
+      <rect width="108" height="108" rx="26" />
+    </clipPath>
+  </defs>
+  <g clip-path="url(#r)">
+    <rect width="108" height="108" fill="#141126" />
+    <circle cx="54" cy="54" r="40" fill="#261C45" />
+    <path d="M0,108 L0,84 L28,68 L45,76 L66,64 L108,86 L108,108 Z" fill="#1C1736" />
+    <circle cx="54" cy="58" r="21" fill="#FFB74D" />
+    <circle cx="54" cy="58" r="17" fill="#FF7043" fill-opacity="0.35" />
+    <path d="M24,31 Q54,37 84,31 L82,38 Q54,43 26,38 Z" fill="#FF3B5C" />
+    <rect x="30" y="44" width="48" height="5" fill="#E52D4F" />
+    <rect x="51" y="38" width="6" height="7" fill="#D41E40" />
+    <path d="M35,38 L41,38 L40,77 L33,77 Z" fill="#FF3B5C" />
+    <path d="M67,38 L73,38 L75,77 L68,77 Z" fill="#FF3B5C" />
+    <rect x="31.5" y="73" width="10" height="5" fill="#1E1938" />
+    <rect x="66.5" y="73" width="10" height="5" fill="#1E1938" />
+    <path d="M48.5,53.5 L63.5,62.5 L48.5,71.5 Z" fill="#FFFFFF" />
+    <path d="M78,22 L79.3,25.2 L82.5,26.5 L79.3,27.8 L78,31 L76.7,27.8 L73.5,26.5 L76.7,25.2 Z" fill="#FFF3C4" />
+  </g>
+</svg>

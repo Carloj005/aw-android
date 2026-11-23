@@ -1,5 +1,7 @@
 # AW Anime (Android Native)
 
+🌐 **Sito web ufficiale (Download APK 1-click & Guida installazione animata):** [https://carloj005.github.io/aw-android/](https://carloj005.github.io/aw-android/)
+
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
 ## Novità v1.2.3 — PiP Nativo Completo & Zone Gesture Sicure

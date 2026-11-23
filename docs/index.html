@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="it" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AW Anime per Android — Scarica APK Ufficiale</title>
+  <meta name="description" content="Scarica AW Anime per Android: app nativa Material You 3 Expressive in 1080p FHD HLS, Smart Skip OP/ED stile Netflix, Picture-in-Picture, Download Offline e aggiornamenti automatici." />
+  <meta name="theme-color" content="#101118" />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="bg-blobs" aria-hidden="true">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+  </div>
+
+  <!-- Navbar -->
+  <header class="navbar">
+    <div class="container nav-inner">
+      <a class="brand" href="#">
+        <img class="brand-icon" src="./favicon.svg" alt="Icona AW Anime" />
+        <span>
+          AW Anime
+          <span class="brand-sub">App Android Nativa</span>
+        </span>
+      </a>
+
+      <nav class="nav-links" aria-label="Navigazione principale">
+        <a href="#guida">Come installare</a>
+        <a href="#funzionalita">Funzionalità</a>
+        <a href="#sicurezza">Sicurezza</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+
+      <div class="nav-actions">
+        <button id="theme-toggle" class="icon-btn" type="button" aria-label="Cambia tema">☀️</button>
+        <a class="btn btn-primary btn-sm" data-apk-download href="https://github.com/Carloj005/aw-android/releases/latest">
+          ⬇ Scarica APK
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- HERO -->
+    <section class="hero">
+      <div class="container hero-grid">
+        <div>
+          <div class="pill">
+            <span class="live-dot"></span>
+            Ultima versione disponibile: <strong data-version-badge>v1.2.3</strong>
+          </div>
+
+          <h1>
+            I tuoi anime su Android, <span class="gradient-text">veloci, puliti e in 1080p</span>.
+          </h1>
+
+          <p class="hero-lead">
+            <strong>AW Anime</strong> è l'app Android nativa in stile <strong>Material You 3</strong> con
+            <strong>Salta Sigla stile Netflix</strong>, <strong>Picture-in-Picture</strong>, download offline
+            e aggiornamenti automatici. Zero pubblicità, zero abbonamenti, 100% open-source.
+          </p>
+
+          <div class="download-box">
+            <div class="download-cta-row">
+              <a class="btn btn-primary" data-apk-download href="https://github.com/Carloj005/aw-android/releases/latest">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M5 20h14v-2H5v2zm7-18v10.17l3.59-3.58L17 10l-5 5-5-5 1.41-1.41L11 12.17V2h2z"/>
+                </svg>
+                Scarica APK (<span data-version-badge>v1.2.3</span>)
+              </a>
+              <a class="btn btn-tonal" href="#guida">
+                📖 Guida installazione
+              </a>
+            </div>
+
+            <div id="download-toast" hidden style="margin-top:12px;padding:10px 14px;border-radius:14px;background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.4);font-size:0.84rem;font-weight:600;color:#86efac;">
+              ✅ Download avviato! Scorri qui sotto nella <strong>Guida in 4 step</strong> se è la prima volta che installi un'app fuori dal Play Store.
+            </div>
+
+            <div class="release-meta">
+              <span>📦 Peso: <strong data-apk-size>3.3 MB</strong></span>
+              <span>🤖 Android <strong>8.0+</strong></span>
+              <span>📅 <strong data-release-date>Ultima release</strong></span>
+              <span>🔄 Si aggiorna da sola</span>
+            </div>
+          </div>
+
+          <div class="trust-row">
+            <span class="trust-chip">🛡️ Zero pubblicità e zero tracker</span>
+            <span class="trust-chip">🎨 Supporta "Icone a tema"</span>
+            <span class="trust-chip">⚡ Skip rapidi fluidi HLS 1080p</span>
+          </div>
+        </div>
+
+        <!-- Animated Android Phone Mockup -->
+        <div class="hero-visual">
+          <div class="floating-chip floating-chip-1">
+            <span>⏭️</span>
+            <span>Smart Skip OP/ED</span>
+          </div>
+
+          <div class="phone-frame" aria-label="Anteprima animata dell'app AW Anime">
+            <div class="phone-screen">
+              <div class="phone-notch"></div>
+              <div class="app-header-mock">
+                <div class="app-header-mock-left">
+                  <img src="./favicon.svg" alt="" />
+                  <span>AW Anime</span>
+                </div>
+                <span class="m-badge m-badge-violet">Material You</span>
+              </div>
+
+              <div class="mock-hero-card">
+                <div class="mock-badges">
+                  <span class="m-badge m-badge-violet">IN EVIDENZA</span>
+                  <span class="m-badge m-badge-coral">ITA / SUB</span>
+                </div>
+                <div class="mock-hero-bottom">
+                  <div class="mock-hero-title">Streaming 1080p FHD</div>
+                  <span class="mock-play-pill">▶ Guarda ora</span>
+                </div>
+              </div>
+
+              <div class="mock-player-strip">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:0.65rem;font-weight:700;color:#c7c6dc;">
+                  <span>Player Nativo Media3</span>
+                  <span class="m-badge m-badge-green">1080p HLS</span>
+                </div>
+                <div class="mock-video-box">
+                  <div class="mock-video-glow"></div>
+                  <span style="position:relative;z-index:2;font-size:1.4rem;opacity:0.85;">▶</span>
+                  <div class="mock-skip-btn">⏭ Salta Sigla</div>
+                  <div class="mock-progress-track">
+                    <div class="mock-progress-fill"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mock-grid-posters">
+                <div class="mock-poster"></div>
+                <div class="mock-poster"></div>
+                <div class="mock-poster"></div>
+              </div>
+
+              <div class="mock-nav">
+                <span class="active">Home</span>
+                <span>Cerca</span>
+                <span>Libreria</span>
+                <span>Offline</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="floating-chip floating-chip-2">
+            <span>📺</span>
+            <span>Finestra PiP + Offline</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- GUIDA INSTALLAZIONE CON ANIMAZIONI -->
+    <section id="guida" class="section">
+      <div class="container">
+        <div class="section-header reveal">
+          <span class="pill">📱 Guida semplice in 4 passaggi</span>
+          <h2>Come installare AW Anime sul telefono</h2>
+          <p>
+            Non serve usare GitHub né essere esperti. Segui questi <strong>4 passaggi animati</strong> — ci vogliono meno di 60 secondi!
+          </p>
+        </div>
+
+        <!-- Spiegazione chiara e rassicurante su Google Play Protect -->
+        <div class="safety-banner reveal">
+          <div class="safety-icon" aria-hidden="true">🛡️</div>
+          <div>
+            <h3>L'avviso di Google Play Protect è normale: l'app è sicura al 100%</h3>
+            <p>
+              Poiché AW Anime è un'app <strong>gratuita, senza pubblicità e distribuita direttamente fuori dal Play Store</strong>,
+              Android mostra in automatico un avviso di Play Protect ("App bloccata" o "App sconosciuta").
+              <strong>Non significa che ci sia un virus</strong>: Google mostra quello stesso avviso per qualsiasi APK non caricato sul suo negozio.
+              Tutto il codice sorgente è <strong>pubblico e verificabile</strong> su GitHub, ogni APK viene compilato in automatico dai server GitHub Actions e firmato digitalmente.
+            </p>
+          </div>
+        </div>
+
+        <div class="guide-steps">
+          <!-- STEP 1 -->
+          <article class="step-card reveal">
+            <div class="step-top">
+              <div class="step-num">1</div>
+              <h3>Scarica l'APK e premi "Scarica comunque"</h3>
+            </div>
+            <p class="step-desc">
+              Tocca il pulsante viola <strong>"Scarica APK"</strong> in alto. Se il browser (es. Chrome) mostra il messaggio
+              <em>"Il file potrebbe essere dannoso"</em>, tocca <strong>Scarica comunque</strong> e al termine premi <strong>Apri</strong>.
+            </p>
+
+            <div class="demo-stage" aria-label="Animazione passo 1: scarica APK da Chrome">
+              <span class="demo-caption">Animazione Step 1</span>
+              <div class="d1-card">
+                <div class="d1-warn-title">Il file potrebbe essere dannoso</div>
+                <div class="d1-warn-sub">Vuoi comunque scaricare AW-Anime.apk?</div>
+                <div class="d1-actions">
+                  <span class="d1-btn">Annulla</span>
+                  <span class="d1-btn d1-btn-go">Scarica comunque</span>
+                </div>
+              </div>
+              <div class="d1-bar-wrap">
+                <div class="d1-bar-top">
+                  <span>AW-Anime.apk</span>
+                  <span class="d1-open-tag">Completato • Apri</span>
+                </div>
+                <div class="d1-progress">
+                  <div class="d1-progress-fill"></div>
+                </div>
+              </div>
+              <div class="tap-dot d1-tap"></div>
+            </div>
+          </article>
+
+          <!-- STEP 2 -->
+          <article class="step-card reveal">
+            <div class="step-top">
+              <div class="step-num">2</div>
+              <h3>Consenti "App sconosciute" nelle Impostazioni</h3>
+            </div>
+            <p class="step-desc">
+              La prima volta Android chiederà il permesso per installare app dal tuo browser. Tocca <strong>Impostazioni</strong>,
+              attiva l'interruttore <strong>"Consenti da questa sorgente"</strong> e poi torna indietro.
+            </p>
+
+            <div class="demo-stage" aria-label="Animazione passo 2: attiva Consenti da questa sorgente">
+              <span class="demo-caption">Animazione Step 2</span>
+              <div class="d2-panel">
+                <div class="d2-header">⬅ Installa app sconosciute • Chrome</div>
+                <div class="d2-row">
+                  <div>
+                    <div class="d2-row-label">Consenti da questa sorgente</div>
+                    <div class="d2-row-sub">Permette di installare AW Anime</div>
+                  </div>
+                  <div class="m3-switch">
+                    <div class="m3-switch-thumb"></div>
+                  </div>
+                </div>
+                <div class="d2-status">✓ Permesso abilitato — premi Indietro per installare</div>
+              </div>
+              <div class="tap-dot d2-tap"></div>
+            </div>
+          </article>
+
+          <!-- STEP 3 -->
+          <article class="step-card reveal">
+            <div class="step-top">
+              <div class="step-num">3</div>
+              <h3>Se appare Google Play Protect: "Ulteriori dettagli → Installa comunque"</h3>
+            </div>
+            <p class="step-desc">
+              Se compare la finestra di <strong>Google Play Protect</strong>, non premere "OK": tocca invece la scritta
+              <strong>"Ulteriori dettagli"</strong> (o la freccetta verso il basso) e poi tocca <strong>"Installa comunque"</strong>.
+            </p>
+
+            <div class="demo-stage" aria-label="Animazione passo 3: supera l'avviso Google Play Protect">
+              <span class="demo-caption">Animazione Step 3</span>
+              <div class="d3-dialog">
+                <div class="d3-shield-row">
+                  <div class="d3-shield">🛡️</div>
+                  <div class="d3-title">Google Play Protect — App non riconosciuta sul Play Store</div>
+                </div>
+                <div class="d3-more-link">▾ Ulteriori dettagli</div>
+                <div class="d3-expanded">
+                  <div class="d3-install-anyway">
+                    <span>Installa comunque</span>
+                    <span>→</span>
+                  </div>
+                </div>
+                <div class="d3-done-pill">
+                  <span style="font-size:1.6rem;">✅</span>
+                  <span>AW Anime installata!</span>
+                </div>
+              </div>
+              <div class="tap-dot d3-tap"></div>
+            </div>
+          </article>
+
+          <!-- STEP 4 -->
+          <article class="step-card reveal">
+            <div class="step-top">
+              <div class="step-num">4</div>
+              <h3>Apri AW Anime: poi si aggiorna da sola!</h3>
+            </div>
+            <p class="step-desc">
+              Troverai la nuova icona <strong>Torii</strong> sulla schermata Home (compatibile anche con le <strong>Icone a tema</strong> di Android).
+              Da questo momento non dovrai più tornare qui: quando esce una nuova versione, <strong>AW Anime ti avvisa e si aggiorna in 1 tocco</strong>!
+            </p>
+
+            <div class="demo-stage" aria-label="Animazione passo 4: icona a tema e aggiornamenti automatici">
+              <span class="demo-caption">Animazione Step 4</span>
+              <div class="d4-stage">
+                <div class="d4-app-tile">
+                  <div class="d4-icon-wrap">
+                    <img src="./favicon.svg" alt="Icona AW Anime" />
+                    <div class="d4-icon-themed" aria-hidden="true">
+                      <svg width="46" height="46" viewBox="0 0 108 108">
+                        <path fill="#e9ddff" d="M24,31 Q54,37 84,31 L82,38 Q54,43 26,38 Z M30,44 H78 V49 H30 Z M51,38 H57 V45 H51 Z M35,38 H41 L40,77 H33 Z M67,38 H73 L75,77 H68 Z M48.5,53.5 L63.5,62.5 L48.5,71.5 Z"/>
+                      </svg>
+                    </div>
+                  </div>
+                  <span class="d4-app-name">AW Anime</span>
+                </div>
+
+                <div class="d4-update-card">
+                  <div class="d4-update-badge">✨ Auto-Update Attivo</div>
+                  <div class="d4-update-text">
+                    Controllo automatico nuove versioni + verifica crittografica <strong>SHA-256</strong> integrata.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- FUNZIONALITA -->
+    <section id="funzionalita" class="section">
+      <div class="container">
+        <div class="section-header reveal">
+          <span class="pill">⚡ Progettata per Android</span>
+          <h2>Tutto quello che ti serve per guardare anime</h2>
+          <p>Veloce, leggera (~3.2 MB) e costruita nativamente in Kotlin e Jetpack Compose.</p>
+        </div>
+
+        <div class="features-grid">
+          <div class="feature-card reveal">
+            <div class="feature-icon">⏭️</div>
+            <h3>Smart Skip OP / ED stile Netflix</h3>
+            <p>Rileva automaticamente sigla iniziale e finale incrociando VixCloud, AniSkip e Anime-Skip, con pulsante fluttuante o Auto-Skip opzionale.</p>
+          </div>
+
+          <div class="feature-card reveal">
+            <div class="feature-icon">🎬</div>
+            <h3>Streaming 1080p FHD HLS</h3>
+            <p>Player nativo Media3/ExoPlayer sempre alla massima qualità, skip rapidi fluidi senza blocchi, luminosità/volume in fasce sicure e blocco schermo.</p>
+          </div>
+
+          <div class="feature-card reveal">
+            <div class="feature-icon">📺</div>
+            <h3>Picture-in-Picture (PiP) Nativo</h3>
+            <p>Continua a guardare in finestra flottante mentre rispondi ai messaggi, con controlli rapidi -10s / Pausa / +10s direttamente nel PiP.</p>
+          </div>
+
+          <div class="feature-card reveal">
+            <div class="feature-icon">🎨</div>
+            <h3>Material You 3 + Icone a Tema</h3>
+            <p>L'intera app e l'icona Torii si adattano ai colori dello sfondo di Android (tema Sistema, Scuro o Chiaro).</p>
+          </div>
+
+          <div class="feature-card reveal">
+            <div class="feature-icon">📥</div>
+            <h3>Download Offline & Wi-Fi Only</h3>
+            <p>Scarica episodi in 1080p per guardarli in viaggio senza internet, con protezione opzionale per scaricare solo su Wi-Fi.</p>
+          </div>
+
+          <div class="feature-card reveal">
+            <div class="feature-icon">❤️</div>
+            <h3>Preferiti, Cronologia & Backup JSON</h3>
+            <p>Ricerca tollerante ai refusi in ordine cronologico delle stagioni, Preferiti, Cronologia automatica e Backup/Ripristino locale in 1 clic.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SICUREZZA & TRASPARENZA -->
+    <section id="sicurezza" class="section">
+      <div class="container">
+        <div class="section-header reveal">
+          <span class="pill">🔒 Sicurezza & Open Source</span>
+          <h2>Trasparente, leggera e verificabile</h2>
+          <p>Nessun trucco nascosto: puoi controllare ogni singola riga di codice e ogni compilazione automatica.</p>
+        </div>
+
+        <div class="security-grid">
+          <div class="sec-panel reveal">
+            <h3 style="margin:0 0 8px;">Perché puoi fidarti di AW Anime</h3>
+            <ul class="sec-list">
+              <li><span class="sec-check">✓</span><span><strong>Zero pubblicità, zero tracker, zero account richiesti</strong>: cronologia, preferiti e impostazioni restano solo sul tuo telefono.</span></li>
+              <li><span class="sec-check">✓</span><span><strong>HTTPS obbligatorio + DNS-over-HTTPS automatico</strong>: connessioni cifrate e aggiramento trasparente di eventuali blocchi DNS dell'operatore.</span></li>
+              <li><span class="sec-check">✓</span><span><strong>Aggiornamenti con doppia verifica</strong>: prima di aggiornare, l'app verifica sia l'hash crittografico <strong>SHA-256</strong> che la <strong>firma digitale del certificato APK</strong>.</span></li>
+              <li><span class="sec-check">✓</span><span><strong>Build riproducibili su GitHub Actions</strong>: l'APK scaricato qui è compilato direttamente dal codice sorgente pubblico.</span></li>
+            </ul>
+          </div>
+
+          <div class="sec-panel reveal">
+            <h3 style="margin:0 0 8px;">Note dell'ultima release (<span data-version-badge>v1.2.3</span>)</h3>
+            <div id="release-notes" class="changelog-box">Caricamento changelog...</div>
+            <div id="sha-value" class="sha-box">SHA-256 verificabile dalla release ufficiale GitHub</div>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;">
+              <a id="sha-link" class="btn btn-tonal btn-sm" href="https://github.com/Carloj005/aw-android/releases/latest" target="_blank" rel="noopener">
+                🔑 File SHA-256
+              </a>
+              <a class="btn btn-tonal btn-sm" href="https://github.com/Carloj005/aw-android" target="_blank" rel="noopener">
+                💻 Codice su GitHub
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq" class="section">
+      <div class="container">
+        <div class="section-header reveal">
+          <span class="pill">❓ Domande frequenti</span>
+          <h2>Dubbi rapidi? Ecco le risposte</h2>
+        </div>
+
+        <div class="faq-list">
+          <details class="faq-item reveal" open>
+            <summary>Perché Google Play Protect mi avvisa durante l'installazione?</summary>
+            <p>
+              Android mostra automaticamente un avviso per <em>qualsiasi</em> file APK installato al di fuori del Google Play Store.
+              AW Anime è distribuita gratuitamente qui come progetto open-source (senza pubblicità e senza passare dal Play Store):
+              ti basta toccare <strong>"Ulteriori dettagli"</strong> e poi <strong>"Installa comunque"</strong>.
+            </p>
+          </details>
+
+          <details class="faq-item reveal">
+            <summary>Quando esce una nuova versione devo tornare su questo sito?</summary>
+            <p>
+              No! AW Anime controlla automaticamente le nuove versioni all'avvio (e in <em>Impostazioni → Aggiornamenti</em>),
+              scarica e verifica il nuovo APK con SHA-256 e lo aggiorna sopra la versione attuale <strong>senza perdere cronologia, preferiti né download</strong>.
+            </p>
+          </details>
+
+          <details class="faq-item reveal">
+            <summary>Funziona anche se il mio operatore blocca AnimeUnity?</summary>
+            <p>
+              Sì: l'app integra un resolver <strong>DNS-over-HTTPS</strong> (Cloudflare / Google) e rileva automaticamente eventuali cambi dominio di AnimeUnity.
+            </p>
+          </details>
+
+          <details class="faq-item reveal">
+            <summary>Come faccio a spostare la mia cronologia su un nuovo telefono?</summary>
+            <p>
+              Apri <strong>Impostazioni → Backup &amp; Ripristino → Esporta JSON</strong> per salvare Cronologia, Preferiti e Impostazioni in un file,
+              poi usa <strong>Importa JSON</strong> sul nuovo dispositivo.
+            </p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- FINAL CTA -->
+    <section class="section" style="padding-top:20px;">
+      <div class="container">
+        <div class="cta-banner reveal">
+          <h2>Pronto a guardare il prossimo episodio?</h2>
+          <p>Scarica l'ultima versione ufficiale di AW Anime per Android in un solo tocco.</p>
+          <a class="btn btn-primary" data-apk-download href="https://github.com/Carloj005/aw-android/releases/latest">
+            ⬇ Scarica AW Anime (<span data-version-badge>v1.2.3</span>)
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container">
+      <p style="margin:0 0 6px;font-weight:700;color:var(--text);">AW Anime — App Android Nativa Open Source</p>
+      <p style="margin:0;">
+        Codice sorgente e release su
+        <a href="https://github.com/Carloj005/aw-android" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;">github.com/Carloj005/aw-android</a>
+      </p>
+    </div>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
