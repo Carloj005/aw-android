@@ -1,12 +1,12 @@
 (() => {
   const REPO = "Carloj005/aw-android";
   const FALLBACK_RELEASE = {
-    tag_name: "v1.2.3",
-    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.2.3/AW-Anime-v1.2.3.apk",
-    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.2.3/AW-Anime-v1.2.3.apk.sha256",
-    size_mb: "3.3 MB",
+    tag_name: "v1.3.0",
+    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.3.0/AW-Anime-v1.3.0.apk",
+    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.3.0/AW-Anime-v1.3.0.apk.sha256",
+    size_mb: "2.6 MB",
     date: "Ultima release",
-    notes: "Player 1080p FHD HLS, Smart Skip OP/ED multi-sorgente, Picture-in-Picture nativo con controlli, zone gesture sicure, Material You 3 + Icone a tema e aggiornamenti automatici verificati.",
+    notes: "Calendario uscite settimanali, notifiche locali nuovi episodi Preferiti, integrazione Suite TV (App Link + export Trakt JSON), download background resumable WorkManager, sicurezza fail-closed e architettura Clean Code.",
   };
 
   // 1. Theme toggle (Dark / Light Material You)

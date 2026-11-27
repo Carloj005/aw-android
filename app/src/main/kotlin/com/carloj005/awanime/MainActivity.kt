@@ -1,5 +1,6 @@
 package com.carloj005.awanime
 
+import android.Manifest
 import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
@@ -28,10 +29,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.CollectionsBookmark
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Home
@@ -51,9 +54,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -61,15 +64,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.formatBytes
 import com.carloj005.awanime.ui.AppViewModel
 import com.carloj005.awanime.ui.UpdateUiState
+import com.carloj005.awanime.ui.screens.CalendarScreen
 import com.carloj005.awanime.ui.screens.DetailScreen
 import com.carloj005.awanime.ui.screens.DownloadsScreen
 import com.carloj005.awanime.ui.screens.HistoryScreen
@@ -80,15 +87,25 @@ import com.carloj005.awanime.ui.screens.SearchScreen
 import com.carloj005.awanime.ui.screens.SettingsScreen
 import com.carloj005.awanime.ui.theme.AWAnimeTheme
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 private enum class BottomTab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Rounded.Home),
+    CALENDAR("Uscite", Icons.Rounded.CalendarMonth),
     SEARCH("Cerca", Icons.Rounded.Search),
     LIBRARY("Libreria", Icons.Rounded.CollectionsBookmark),
     DOWNLOADS("Download", Icons.Rounded.Download),
 }
+
+private data class NotificationAnimeTarget(
+    val animeId: String,
+    val title: String,
+    val isDub: Boolean,
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -96,11 +113,18 @@ class MainActivity : ComponentActivity() {
         private const val ACTION_PIP_TOGGLE_PLAY = "com.carloj005.awanime.action.PIP_TOGGLE_PLAY"
         private const val ACTION_PIP_REWIND = "com.carloj005.awanime.action.PIP_REWIND"
         private const val ACTION_PIP_FORWARD = "com.carloj005.awanime.action.PIP_FORWARD"
+
+        const val EXTRA_OPEN_ANIME_ID = "com.carloj005.awanime.extra.OPEN_ANIME_ID"
+        const val EXTRA_OPEN_ANIME_TITLE = "com.carloj005.awanime.extra.OPEN_ANIME_TITLE"
+        const val EXTRA_OPEN_ANIME_IS_DUB = "com.carloj005.awanime.extra.OPEN_ANIME_IS_DUB"
     }
 
     private val isInPipState = mutableStateOf(false)
     private val _pipCommands = MutableSharedFlow<PipCommand>(extraBufferCapacity = 8)
     val pipCommands: SharedFlow<PipCommand> = _pipCommands.asSharedFlow()
+
+    private val _pendingNotificationTarget = MutableStateFlow<NotificationAnimeTarget?>(null)
+    private val pendingNotificationTarget: StateFlow<NotificationAnimeTarget?> = _pendingNotificationTarget.asStateFlow()
 
     @Volatile
     private var shouldAutoEnterPip: Boolean = false
@@ -196,9 +220,24 @@ class MainActivity : ComponentActivity() {
         isInPipState.value = isInPictureInPictureMode
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        val animeId = intent?.getStringExtra(EXTRA_OPEN_ANIME_ID)?.takeIf { it.isNotBlank() } ?: return
+        val title = intent.getStringExtra(EXTRA_OPEN_ANIME_TITLE).orEmpty().ifBlank { "Anime" }
+        val isDub = intent.getBooleanExtra(EXTRA_OPEN_ANIME_IS_DUB, false)
+        _pendingNotificationTarget.value = NotificationAnimeTarget(animeId, title, isDub)
+        intent.removeExtra(EXTRA_OPEN_ANIME_ID)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleNotificationIntent(intent)
 
         val filter = IntentFilter().apply {
             addAction(ACTION_PIP_TOGGLE_PLAY)
@@ -208,11 +247,18 @@ class MainActivity : ComponentActivity() {
         ContextCompat.registerReceiver(this, pipActionReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
         setContent {
-            val vm: AppViewModel = viewModel()
-            val settings by vm.settings.collectAsState()
-            val activePlayer by vm.activePlayer.collectAsState()
+            val vm: AppViewModel = viewModel(factory = AppViewModel.Factory)
+            val settings by vm.settings.collectAsStateWithLifecycle()
+            val activePlayer by vm.activePlayer.collectAsStateWithLifecycle()
+            val pendingTarget by pendingNotificationTarget.collectAsStateWithLifecycle()
             val isInPip by isInPipState
             var isPlayerPlaying by rememberSaveable { mutableStateOf(true) }
+
+            LaunchedEffect(pendingTarget) {
+                val target = pendingTarget ?: return@LaunchedEffect
+                vm.openAnimeById(target.animeId, target.title, target.isDub)
+                _pendingNotificationTarget.value = null
+            }
 
             LaunchedEffect(activePlayer, settings.autoPipEnabled, isPlayerPlaying) {
                 val canAuto = activePlayer != null && settings.autoPipEnabled && isPlayerPlaying
@@ -276,32 +322,30 @@ private fun AwAnimeRoot(
     val context = LocalContext.current
     var selectedTab by rememberSaveable { mutableStateOf(BottomTab.HOME) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    val homeGridState = rememberLazyGridState()
 
-    val homeState by vm.homeState.collectAsState()
-    val searchState by vm.searchState.collectAsState()
-    val detailState by vm.detailState.collectAsState()
-    val history by vm.history.collectAsState()
-    val favorites by vm.favorites.collectAsState()
-    val downloads by vm.downloads.collectAsState()
-    val settings by vm.settings.collectAsState()
-    val activePlayer by vm.activePlayer.collectAsState()
-    val updateState by vm.updateState.collectAsState()
-    val settingsFeedback by vm.settingsFeedback.collectAsState()
+    val homeState by vm.homeState.collectAsStateWithLifecycle()
+    val calendarState by vm.calendarState.collectAsStateWithLifecycle()
+    val searchState by vm.searchState.collectAsStateWithLifecycle()
+    val detailState by vm.detailState.collectAsStateWithLifecycle()
+    val history by vm.history.collectAsStateWithLifecycle()
+    val favorites by vm.favorites.collectAsStateWithLifecycle()
+    val downloads by vm.downloads.collectAsStateWithLifecycle()
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val activePlayer by vm.activePlayer.collectAsStateWithLifecycle()
+    val updateState by vm.updateState.collectAsStateWithLifecycle()
+    val settingsFeedback by vm.settingsFeedback.collectAsStateWithLifecycle()
+    val isCheckingFavorites by vm.isCheckingFavorites.collectAsStateWithLifecycle()
+    val cacheSizeBytes by vm.cacheSizeBytes.collectAsStateWithLifecycle()
+
+    val favoriteKeys = remember(favorites) { favorites.map { it.uniqueKey }.toSet() }
+    val isSuiteTvInstalled = remember(context, showSettings) { SuiteTvIntegration.isSuiteTvInstalled(context) }
 
     val exportBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                val payload = vm.buildBackupJson()
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(payload.toByteArray(Charsets.UTF_8))
-                }
-            }.onSuccess {
-                vm.setSettingsFeedback("Backup esportato con successo!")
-            }.onFailure { err ->
-                vm.setSettingsFeedback("Errore esportazione backup: ${err.message}")
-            }
+            vm.exportBackupToUri(context.contentResolver, uri)
         }
     }
 
@@ -309,25 +353,28 @@ private fun AwAnimeRoot(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { inp ->
-                    inp.bufferedReader(Charsets.UTF_8).readText()
-                }.orEmpty()
-            }.mapCatching { text ->
-                vm.importBackupJson(text).getOrThrow()
-            }.onSuccess { msg ->
-                vm.setSettingsFeedback(msg)
-            }.onFailure { err ->
-                vm.setSettingsFeedback("File backup non valido: ${err.message}")
-            }
+            vm.importBackupFromUri(context.contentResolver, uri)
         }
+    }
+
+    val exportSuiteTvLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) {
+            vm.exportSuiteTvHistoryToUri(context.contentResolver, uri)
+        }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        vm.setFavoriteNotificationsEnabled(granted)
     }
 
     val activeDownloadCount = downloads.count {
         it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.QUEUED
     }
 
-    // Dialogo Aggiornamento Automatico (GitHub Releases con verifica SHA-256 + Firma)
     if (updateState.showDialog && updateState.availableUpdate != null && activePlayer == null) {
         UpdateDialog(
             state = updateState,
@@ -336,11 +383,10 @@ private fun AwAnimeRoot(
         )
     }
 
-    // 1. Player Fullscreen / PiP
-    if (activePlayer != null) {
+    activePlayer?.let { request ->
         BackHandler { vm.closePlayer() }
         PlayerScreen(
-            request = activePlayer!!,
+            request = request,
             settings = settings,
             isInPipMode = isInPipMode,
             pipCommands = pipCommands,
@@ -351,51 +397,61 @@ private fun AwAnimeRoot(
         return
     }
 
-    // 2. Schermata Impostazioni
     if (showSettings) {
+        LaunchedEffect(Unit) { vm.refreshCacheSize() }
         BackHandler { showSettings = false }
         SettingsScreen(
             settings = settings,
             updateState = updateState,
+            cacheBytes = cacheSizeBytes,
             feedbackMessage = settingsFeedback,
-            onBack = { showSettings = false },
-            onThemeModeChange = { vm.setThemeMode(it) },
-            onDynamicColorsChange = { vm.setDynamicColors(it) },
-            onAutoSkipIntroChange = { vm.setAutoSkipIntro(it) },
-            onAutoSkipOutroChange = { vm.setAutoSkipOutro(it) },
-            onAutoPipChange = { vm.setAutoPipEnabled(it) },
-            onWifiOnlyDownloadsChange = { vm.setWifiOnlyDownloads(it) },
-            onAutoCheckUpdatesChange = { vm.setAutoCheckUpdates(it) },
-            onCheckUpdatesNow = { vm.checkForUpdates(manual = true) },
-            onOpenUpdateDialog = { vm.showUpdateDialog() },
-            onExportBackup = { exportBackupLauncher.launch("aw-anime-backup.json") },
-            onImportBackup = { importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
-            onClearCache = { onDone -> vm.clearAppCache(context, onDone) },
+            isCheckingFavorites = isCheckingFavorites,
+            isSuiteTvInstalled = isSuiteTvInstalled,
+            onEvent = { event ->
+                vm.onSettingsEvent(
+                    event = event,
+                    onNavigateBack = { showSettings = false },
+                    onLaunchExportBackup = { exportBackupLauncher.launch("aw-anime-backup.json") },
+                    onLaunchImportBackup = {
+                        importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                    },
+                    onLaunchExportSuiteTv = {
+                        exportSuiteTvLauncher.launch("aw-anime-suitetv-trakt.json")
+                    },
+                    onOpenSuiteTv = { SuiteTvIntegration.openSuiteTvAppOrWeb(context) },
+                    onRequestNotificationPermissionAndEnable = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            vm.setFavoriteNotificationsEnabled(true)
+                        }
+                    },
+                )
+            },
         )
         return
     }
 
-    // 3. Scheda Anime Dettaglio
-    if (detailState.anime != null) {
+    detailState.anime?.let { activeDetailAnime ->
         BackHandler { vm.closeDetail() }
-        val histEntry = history.firstOrNull { it.uniqueKey == detailState.anime?.uniqueKey }
-        val isFav = favorites.any { it.uniqueKey == detailState.anime?.uniqueKey }
+        val histEntry = history.firstOrNull { it.uniqueKey == activeDetailAnime.uniqueKey }
+        val isFav = activeDetailAnime.uniqueKey in favoriteKeys
         DetailScreen(
             state = detailState,
             historyEntry = histEntry,
             isFavorite = isFav,
             downloads = downloads,
+            shareBaseUrl = vm.shareBaseUrl,
             onBack = { vm.closeDetail() },
             onRetry = { vm.openAnimeDetail(it) },
             onToggleFavorite = { vm.toggleFavorite(it) },
             onSwitchLanguage = { vm.switchDetailLanguage(it) },
             onPlayEpisode = { anime, eps, idx -> vm.startPlayback(anime, eps, idx) },
-            onDownloadEpisode = { anime, ep -> vm.downloadRepo.enqueueDownload(anime, ep) },
+            onDownloadEpisode = { anime, ep -> vm.enqueueDownload(anime, ep) },
         )
         return
     }
 
-    // 4. Navigazione principale 4 tab Material You 3 Expressive
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -406,18 +462,22 @@ private fun AwAnimeRoot(
                         onClick = { selectedTab = tab },
                         icon = {
                             if (tab == BottomTab.DOWNLOADS && activeDownloadCount > 0) {
-                                BadgedBox(
-                                    badge = {
-                                        Badge { Text(activeDownloadCount.toString()) }
-                                    }
-                                ) {
+                                BadgedBox(badge = { Badge { Text(activeDownloadCount.toString()) } }) {
                                     Icon(tab.icon, contentDescription = tab.label)
                                 }
                             } else {
                                 Icon(tab.icon, contentDescription = tab.label)
                             }
                         },
-                        label = { Text(tab.label, fontWeight = FontWeight.SemiBold) },
+                        label = {
+                            Text(
+                                text = tab.label,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
                     )
                 }
             }
@@ -440,6 +500,18 @@ private fun AwAnimeRoot(
                     onAnimeClick = { vm.openAnimeDetail(it) },
                     onQuickWatch = { vm.quickWatchAnime(it) },
                     onResumeHistory = { vm.resumeFromHistory(it) },
+                    gridState = homeGridState,
+                )
+
+                BottomTab.CALENDAR -> CalendarScreen(
+                    state = calendarState,
+                    favoriteKeys = favoriteKeys,
+                    onEnsureLoaded = { vm.ensureCalendarLoaded() },
+                    onRefresh = { vm.loadCalendar(forceRefresh = true) },
+                    onSelectDay = { vm.selectCalendarDay(it) },
+                    onSelectFilter = { vm.setCalendarFilter(it) },
+                    onAnimeClick = { vm.openAnimeDetail(it) },
+                    onQuickWatch = { vm.quickWatchAnime(it) },
                 )
 
                 BottomTab.SEARCH -> SearchScreen(
@@ -456,16 +528,16 @@ private fun AwAnimeRoot(
                     favorites = favorites,
                     onResume = { vm.resumeFromHistory(it) },
                     onOpenDetail = { vm.openAnimeDetail(it) },
-                    onRemoveHistory = { vm.historyRepo.remove(it) },
+                    onRemoveHistory = { vm.removeHistory(it) },
                     onRemoveFavorite = { vm.removeFavorite(it) },
                 )
 
                 BottomTab.DOWNLOADS -> DownloadsScreen(
                     downloads = downloads,
                     onPlayOffline = { vm.playDownloadedEpisode(it) },
-                    onRetry = { vm.downloadRepo.retryDownload(it) },
-                    onCancel = { vm.downloadRepo.cancelDownload(it) },
-                    onDelete = { vm.downloadRepo.deleteDownload(it) },
+                    onRetry = { vm.retryDownload(it) },
+                    onCancel = { vm.cancelDownload(it) },
+                    onDelete = { vm.deleteDownload(it) },
                 )
             }
         }

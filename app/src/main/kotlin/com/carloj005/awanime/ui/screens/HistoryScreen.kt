@@ -24,9 +24,11 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -44,11 +46,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.model.formatTimeMs
@@ -326,19 +330,43 @@ private fun HistoryCard(
                     trackColor = cs.surfaceContainerHigh,
                 )
                 Spacer(Modifier.height(10.dp))
-                Button(
-                    onClick = onResume,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
-                    shape = CircleShape,
-                    modifier = Modifier.height(36.dp),
+                val epNumInt = entry.currentEpisodeNum.toIntOrNull()
+                val knownMax = entry.anime.totalEpisodes
+                    ?: entry.anime.releasedEpisodes.takeIf { it > 0 }
+                val hasNextEpisode = knownMax == null || epNumInt == null || epNumInt < knownMax
+                val context = LocalContext.current
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = if (entry.completed) "Prossimo episodio" else "Riprendi",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
+                    Button(
+                        onClick = onResume,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                        shape = CircleShape,
+                        modifier = Modifier.height(36.dp),
+                    ) {
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = when {
+                                !entry.completed -> "Riprendi"
+                                hasNextEpisode -> "Prossimo episodio"
+                                else -> "Riguarda Ep. ${entry.currentEpisodeNum}"
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    FilledTonalIconButton(
+                        onClick = { SuiteTvIntegration.openAnimeInSuiteTv(context, entry.anime) },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Tv,
+                            contentDescription = "Segna su Suite TV",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
                 }
             }
         }

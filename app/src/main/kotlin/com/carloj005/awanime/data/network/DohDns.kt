@@ -6,6 +6,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Cookie
 import okhttp3.CookieJar
+import okhttp3.Dispatcher
 import okhttp3.Dns
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -15,33 +16,30 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.UnknownHostException
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
- * Custom OkHttp DNS con:
- * - Fallback trasparente DNS-over-HTTPS (Cloudflare / Google) contro blocchi ISP
- * - Cache con TTL (10 minuti) per evitare IP stantii dopo rotazione CDN
- * - Protezione anti-SSRF / anti-DNS-rebinding su IPv4 e IPv6 (blocca loopback, privati, link-local, ULA, CGNAT)
+ * Custom OkHttp DNS with:
+ * - Transparent DNS-over-HTTPS fallback (Cloudflare / Google) against ISP DNS blocks
+ * - 10-minute TTL cache to handle CDN IP rotation
+ * - Anti-SSRF / anti-DNS-rebinding protection on IPv4 & IPv6
  */
-class DohFallbackDns : Dns {
+class DohFallbackDns(
+    sharedDispatcher: Dispatcher? = null,
+) : Dns {
     private data class CachedEntry(val addresses: List<InetAddress>, val expiresAtMs: Long)
 
     private val cache = ConcurrentHashMap<String, CachedEntry>()
     private val json = Json { ignoreUnknownKeys = true }
-    private val dohClient = OkHttpClient.Builder()
-        .connectTimeout(4, TimeUnit.SECONDS)
-        .readTimeout(4, TimeUnit.SECONDS)
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .build()
-
-    private val targetKeywords = listOf(
-        "animeunity.",
-        "vixcloud.",
-        "vix-content.",
-        "vixsrc.",
-    )
+    private val dohClient: OkHttpClient = OkHttpClient.Builder().apply {
+        if (sharedDispatcher != null) dispatcher(sharedDispatcher)
+        connectTimeout(4, TimeUnit.SECONDS)
+        readTimeout(4, TimeUnit.SECONDS)
+        followRedirects(false)
+        followSslRedirects(false)
+    }.build()
 
     private val dohEndpoints = listOf(
         "https://cloudflare-dns.com/dns-query",
@@ -50,8 +48,8 @@ class DohFallbackDns : Dns {
     )
 
     override fun lookup(hostname: String): List<InetAddress> {
-        val lower = hostname.trim().lowercase()
-        val isTarget = targetKeywords.any { it in lower }
+        val lower = hostname.trim().lowercase(Locale.ROOT)
+        val isTarget = UrlSecurityPolicy.isDohTargetHost(lower)
         val now = System.currentTimeMillis()
 
         if (isTarget) {
@@ -121,6 +119,9 @@ class DohFallbackDns : Dns {
         private const val CACHE_TTL_MS = 10 * 60 * 1000L
         private val SAFE_HOSTNAME_REGEX = Regex("""^[a-z0-9.-]{1,253}$""")
 
+        fun isTargetHostname(hostname: String): Boolean =
+            UrlSecurityPolicy.isDohTargetHost(hostname)
+
         fun isGlobalPublicAddress(addr: InetAddress): Boolean {
             return when (addr) {
                 is Inet4Address -> isGlobalPublicIpv4(addr)
@@ -138,7 +139,6 @@ class DohFallbackDns : Dns {
             val b = addr.address
             val b0 = b[0].toInt() and 0xFF
             val b1 = b[1].toInt() and 0xFF
-            // Blocca 0.0.0.0/8, CGNAT 100.64.0.0/10, benchmark 198.18.0.0/15, multicast/riservati >= 224
             if (b0 == 0 || b0 >= 224) return false
             if (b0 == 100 && b1 in 64..127) return false
             if (b0 == 198 && (b1 == 18 || b1 == 19)) return false
@@ -154,26 +154,57 @@ class DohFallbackDns : Dns {
             val b = addr.address
             val b0 = b[0].toInt() and 0xFF
             val b1 = b[1].toInt() and 0xFF
-            // Blocca Unique Local Address (fc00::/7) e IPv4-mapped privati
+            val b2 = b[2].toInt() and 0xFF
+            val b3 = b[3].toInt() and 0xFF
+
+            // Unique Local Address (fc00::/7)
             if ((b0 and 0xFE) == 0xFC) return false
-            // Blocca documentation prefix 2001:db8::/32
-            if (b0 == 0x20 && b1 == 0x01 && (b[2].toInt() and 0xFF) == 0x0D && (b[3].toInt() and 0xFF) == 0xB8) {
+            // Documentation prefix (2001:db8::/32)
+            if (b0 == 0x20 && b1 == 0x01 && b2 == 0x0D && b3 == 0xB8) return false
+            // Discard prefix (100::/64)
+            if (b0 == 0x01 && b1 == 0x00 && (2..7).all { b[it].toInt() == 0 }) return false
+            // IPv4-compatible IPv6 (::/96)
+            if ((0..11).all { b[it].toInt() == 0 }) return false
+            // IPv4-mapped IPv6 (::ffff:0:0/96) -> validate embedded IPv4
+            if ((0..9).all { b[it].toInt() == 0 } &&
+                (b[10].toInt() and 0xFF) == 0xFF &&
+                (b[11].toInt() and 0xFF) == 0xFF
+            ) {
+                return isEmbeddedIpv4Public(b)
+            }
+            // NAT64 local-use prefix (64:ff9b:1::/48)
+            if (b0 == 0x00 && b1 == 0x64 && b2 == 0xFF && b3 == 0x9B &&
+                b[4].toInt() == 0 && (b[5].toInt() and 0xFF) == 0x01
+            ) {
                 return false
             }
+            // NAT64 well-known prefix (64:ff9b::/96) -> validate embedded IPv4
+            if (b0 == 0x00 && b1 == 0x64 && b2 == 0xFF && b3 == 0x9B &&
+                (4..11).all { b[it].toInt() == 0 }
+            ) {
+                return isEmbeddedIpv4Public(b)
+            }
             return true
+        }
+
+        private fun isEmbeddedIpv4Public(ipv6Bytes: ByteArray): Boolean {
+            val embedded = runCatching {
+                InetAddress.getByAddress(ipv6Bytes.copyOfRange(12, 16)) as? Inet4Address
+            }.getOrNull() ?: return false
+            return isGlobalPublicIpv4(embedded)
         }
     }
 }
 
 /**
- * CookieJar in memoria thread-safe per mantenere la sessione Laravel (`XSRF-TOKEN`, `animeunity_session`),
- * isolata strettamente sui domini di origine.
+ * Thread-safe in-memory CookieJar isolating Laravel session cookies (`XSRF-TOKEN`, `animeunity_session`)
+ * strictly to their origin host.
  */
 class MemoryCookieJar : CookieJar {
     private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
 
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
-        val host = url.host.lowercase()
+        val host = url.host.lowercase(Locale.ROOT)
         val list = store.getOrPut(host) { mutableListOf() }
         synchronized(list) {
             val now = System.currentTimeMillis()
@@ -187,7 +218,7 @@ class MemoryCookieJar : CookieJar {
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        val host = url.host.lowercase()
+        val host = url.host.lowercase(Locale.ROOT)
         val now = System.currentTimeMillis()
         val result = mutableListOf<Cookie>()
         for ((storedHost, list) in store) {

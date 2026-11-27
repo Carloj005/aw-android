@@ -33,8 +33,8 @@ android {
     applicationId = "com.carloj005.awanime"
     minSdk = 26
     targetSdk = 36
-    versionCode = 6
-    versionName = "1.2.3"
+    versionCode = 7
+    versionName = "1.3.0"
     buildConfigField("String", "GITHUB_REPO", "\"Carloj005/aw-android\"")
   }
 
@@ -110,6 +110,7 @@ dependencies {
   implementation(libs.media3.exoplayer.hls)
   implementation(libs.media3.datasource.okhttp)
   implementation(libs.media3.ui)
+  implementation(libs.androidx.work.runtime.ktx)
 
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)

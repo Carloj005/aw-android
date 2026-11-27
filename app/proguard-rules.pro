@@ -29,9 +29,16 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
 
-# Media3 / ExoPlayer
--keep class androidx.media3.** { *; }
+# Media3 / ExoPlayer ships its own consumer ProGuard rules in each AAR.
 -dontwarn androidx.media3.**
+
+# WorkManager reflective worker instantiation
+-keep class com.carloj005.awanime.data.storage.DownloadWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+-keep class com.carloj005.awanime.data.notifications.FavoriteEpisodesCheckWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
 
 # Strip verbose debug logs in release builds
 -assumenosideeffects class android.util.Log {

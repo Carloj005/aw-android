@@ -1,21 +1,41 @@
 package com.carloj005.awanime.ui
 
-import android.content.Context
+import android.content.ContentResolver
+import android.net.Uri
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.carloj005.awanime.AppContainer
 import com.carloj005.awanime.AwAnimeApp
+import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.AppBackupData
 import com.carloj005.awanime.data.model.AppSettings
+import com.carloj005.awanime.data.model.CalendarDayGroup
 import com.carloj005.awanime.data.model.DownloadEntry
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.model.LatestFilter
 import com.carloj005.awanime.data.model.SearchFilter
-import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.UpdateInfo
 import com.carloj005.awanime.data.model.WatchHistoryEntry
+import com.carloj005.awanime.data.model.resolveResumeTarget
+import com.carloj005.awanime.data.network.AnimeUnityClient
+import com.carloj005.awanime.data.network.OfflineException
 import com.carloj005.awanime.data.network.SearchUtils
+import com.carloj005.awanime.data.notifications.FavoriteEpisodeNotificationManager
+import com.carloj005.awanime.data.storage.DownloadRepository
+import com.carloj005.awanime.data.storage.FavoritesRepository
+import com.carloj005.awanime.data.storage.HistoryRepository
+import com.carloj005.awanime.data.storage.SettingsRepository
+import com.carloj005.awanime.data.update.AppUpdater
+import com.carloj005.awanime.ui.screens.SettingsEvent
+import com.carloj005.awanime.util.runCatchingCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,7 +46,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+
+enum class CalendarFilter(val label: String) {
+    ALL("Tutti"),
+    SUB("SUB"),
+    DUB("ITA"),
+    FAVORITES("Preferiti"),
+}
 
 data class HomeUiState(
     val selectedFilter: LatestFilter = LatestFilter.ALL,
@@ -36,6 +65,16 @@ data class HomeUiState(
     val isRefreshing: Boolean = false,
     val error: String? = null,
     val activeDomain: String = "animeunity.cx",
+)
+
+data class CalendarUiState(
+    val days: List<CalendarDayGroup> = emptyList(),
+    val selectedDayIndex: Int = 0,
+    val filter: CalendarFilter = CalendarFilter.ALL,
+    val isLoading: Boolean = false,
+    val isRefreshing: Boolean = false,
+    val hasLoaded: Boolean = false,
+    val error: String? = null,
 )
 
 data class SearchUiState(
@@ -75,33 +114,68 @@ data class UpdateUiState(
     val pendingApkFile: File? = null,
 )
 
-class AppViewModel : ViewModel() {
+class AppViewModel(
+    private val client: AnimeUnityClient,
+    private val historyRepo: HistoryRepository,
+    private val favoritesRepo: FavoritesRepository,
+    private val downloadRepo: DownloadRepository,
+    private val settingsRepo: SettingsRepository,
+    private val notificationManager: FavoriteEpisodeNotificationManager,
+    private val updater: AppUpdater,
+    private val cacheDir: File,
+    private val savedStateHandle: SavedStateHandle,
+) : ViewModel() {
 
-    private val client = AwAnimeApp.instance.animeUnityClient
-    val historyRepo = AwAnimeApp.instance.historyRepository
-    val favoritesRepo = AwAnimeApp.instance.favoritesRepository
-    val downloadRepo = AwAnimeApp.instance.downloadRepository
-    val settingsRepo = AwAnimeApp.instance.settingsRepository
-    val updater = AwAnimeApp.instance.appUpdater
+    companion object {
+        private const val KEY_SAVED_DETAIL_ID = "saved_detail_id"
+        private const val KEY_SAVED_DETAIL_TITLE = "saved_detail_title"
+        private const val KEY_SAVED_DETAIL_DUB = "saved_detail_dub"
+        private const val MAX_RECENT_QUERIES = 10
+        private const val MAX_BACKUP_IMPORT_BYTES = 10 * 1024 * 1024 // 10 MB anti-OOM/ANR cap
+
+        val Factory: ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                val app = this[APPLICATION_KEY] as AwAnimeApp
+                val container: AppContainer = app.container
+                AppViewModel(
+                    client = container.animeUnityClient,
+                    historyRepo = container.historyRepository,
+                    favoritesRepo = container.favoritesRepository,
+                    downloadRepo = container.downloadRepository,
+                    settingsRepo = container.settingsRepository,
+                    notificationManager = container.favoriteNotificationManager,
+                    updater = container.appUpdater,
+                    cacheDir = container.cacheDir,
+                    savedStateHandle = createSavedStateHandle(),
+                )
+            }
+        }
+    }
 
     val history: StateFlow<List<WatchHistoryEntry>> = historyRepo.history
     val favorites: StateFlow<List<AnimeItem>> = favoritesRepo.favorites
     val downloads: StateFlow<List<DownloadEntry>> = downloadRepo.downloads
     val settings: StateFlow<AppSettings> = settingsRepo.settings
 
+    val shareBaseUrl: String get() = client.baseUrl
+
     private val backupJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
     private val homeCache = mutableMapOf<LatestFilter, List<AnimeItem>>()
     private var homeJob: Job? = null
+    private var calendarJob: Job? = null
     private var searchJob: Job? = null
     private var detailJob: Job? = null
+    private var playbackLaunchJob: Job? = null
     private var updateJob: Job? = null
+    private var favoriteCheckJob: Job? = null
 
     private val _homeState = MutableStateFlow(HomeUiState())
     val homeState: StateFlow<HomeUiState> = _homeState.asStateFlow()
 
-    private val _searchState = MutableStateFlow(
-        SearchUiState(recentQueries = settingsRepo.settings.value.recentQueries)
-    )
+    private val _calendarState = MutableStateFlow(CalendarUiState())
+    val calendarState: StateFlow<CalendarUiState> = _calendarState.asStateFlow()
+
+    private val _searchState = MutableStateFlow(SearchUiState())
     val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
 
     private val _detailState = MutableStateFlow(DetailUiState())
@@ -116,11 +190,45 @@ class AppViewModel : ViewModel() {
     private val _settingsFeedback = MutableStateFlow<String?>(null)
     val settingsFeedback: StateFlow<String?> = _settingsFeedback.asStateFlow()
 
+    private val _isCheckingFavorites = MutableStateFlow(false)
+    val isCheckingFavorites: StateFlow<Boolean> = _isCheckingFavorites.asStateFlow()
+
+    private val _cacheSizeBytes = MutableStateFlow(0L)
+    val cacheSizeBytes: StateFlow<Long> = _cacheSizeBytes.asStateFlow()
+
     init {
         loadHome(LatestFilter.ALL)
-        if (settings.value.autoCheckUpdates) {
-            checkForUpdates(manual = false)
+        restoreDetailIfNeeded()
+        viewModelScope.launch {
+            val loadedSettings = settingsRepo.awaitLoaded()
+            _searchState.update { it.copy(recentQueries = loadedSettings.recentQueries) }
+            notificationManager.syncPeriodicSchedule(
+                enabled = loadedSettings.notifyFavoriteEpisodes,
+                intervalHours = loadedSettings.notifyCheckIntervalHours,
+            )
+            if (loadedSettings.autoCheckUpdates) {
+                checkForUpdates(manual = false)
+            }
         }
+    }
+
+    private fun restoreDetailIfNeeded() {
+        val savedId = savedStateHandle.get<String>(KEY_SAVED_DETAIL_ID)?.takeIf { it.isNotBlank() } ?: return
+        val savedTitle = savedStateHandle.get<String>(KEY_SAVED_DETAIL_TITLE).orEmpty().ifBlank { "Anime" }
+        val savedDub = savedStateHandle.get<Boolean>(KEY_SAVED_DETAIL_DUB) ?: false
+        openAnimeById(savedId, savedTitle, savedDub)
+    }
+
+    fun openAnimeById(animeId: String, title: String, isDub: Boolean) {
+        if (animeId.isBlank()) return
+        openAnimeDetail(
+            AnimeItem(
+                id = animeId,
+                title = title.ifBlank { "Anime" },
+                isDub = isDub,
+                audioLabel = if (isDub) "Italiano" else "Giapponese",
+            )
+        )
     }
 
     fun loadHome(filter: LatestFilter = _homeState.value.selectedFilter, forceRefresh: Boolean = false) {
@@ -149,9 +257,10 @@ class AppViewModel : ViewModel() {
             )
         }
         homeJob = viewModelScope.launch {
-            runCatching {
+            runCatchingCancellable {
                 val list = client.getLatestEpisodes(filter)
-                val carousel = runCatching { client.getHomeCarousel(forceRefresh = forceRefresh) }.getOrDefault(emptyList())
+                val carousel = runCatchingCancellable { client.getHomeCarousel(forceRefresh = forceRefresh) }
+                    .getOrDefault(emptyList())
                 list to carousel
             }.onSuccess { (list, carousel) ->
                 homeCache[filter] = list
@@ -179,6 +288,62 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    fun ensureCalendarLoaded() {
+        val st = _calendarState.value
+        if (st.hasLoaded || st.isLoading) return
+        loadCalendar(forceRefresh = false)
+    }
+
+    fun loadCalendar(forceRefresh: Boolean = false) {
+        calendarJob?.cancel()
+        _calendarState.update {
+            it.copy(
+                isLoading = it.days.isEmpty() || !forceRefresh,
+                isRefreshing = forceRefresh && it.days.isNotEmpty(),
+                error = null,
+            )
+        }
+        calendarJob = viewModelScope.launch {
+            runCatchingCancellable { client.getWeeklyCalendar() }
+                .onSuccess { days ->
+                    val defaultDayIdx = days.indexOfFirst { it.isToday }.takeIf { it >= 0 } ?: 0
+                    _calendarState.update { st ->
+                        st.copy(
+                            days = days,
+                            selectedDayIndex = if (st.hasLoaded) {
+                                st.selectedDayIndex.coerceIn(0, (days.size - 1).coerceAtLeast(0))
+                            } else {
+                                defaultDayIdx
+                            },
+                            isLoading = false,
+                            isRefreshing = false,
+                            hasLoaded = true,
+                            error = null,
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _calendarState.update {
+                        it.copy(
+                            isLoading = false,
+                            isRefreshing = false,
+                            error = err.message ?: "Impossibile caricare il calendario uscite",
+                        )
+                    }
+                }
+        }
+    }
+
+    fun selectCalendarDay(index: Int) {
+        _calendarState.update { st ->
+            st.copy(selectedDayIndex = index.coerceIn(0, (st.days.size - 1).coerceAtLeast(0)))
+        }
+    }
+
+    fun setCalendarFilter(filter: CalendarFilter) {
+        _calendarState.update { it.copy(filter = filter) }
+    }
+
     fun updateSearchQuery(newQuery: String) {
         _searchState.update { it.copy(query = newQuery) }
     }
@@ -196,7 +361,8 @@ class AppViewModel : ViewModel() {
         val q = rawQuery.trim()
         if (q.isEmpty()) return
         searchJob?.cancel()
-        val updatedRecent = (listOf(q) + _searchState.value.recentQueries.filterNot { it.equals(q, ignoreCase = true) }).take(10)
+        val updatedRecent = (listOf(q) + _searchState.value.recentQueries.filterNot { it.equals(q, ignoreCase = true) })
+            .take(MAX_RECENT_QUERIES)
         settingsRepo.update { it.copy(recentQueries = updatedRecent) }
         _searchState.update { st ->
             st.copy(
@@ -208,11 +374,9 @@ class AppViewModel : ViewModel() {
             )
         }
         searchJob = viewModelScope.launch {
-            runCatching { client.search(q) }
+            runCatchingCancellable { client.search(q) }
                 .onSuccess { list ->
-                    _searchState.update {
-                        it.copy(results = list, isLoading = false, error = null)
-                    }
+                    _searchState.update { it.copy(results = list, isLoading = false, error = null) }
                 }
                 .onFailure { err ->
                     _searchState.update {
@@ -228,14 +392,23 @@ class AppViewModel : ViewModel() {
 
     fun openAnimeDetail(anime: AnimeItem) {
         detailJob?.cancel()
+        savedStateHandle[KEY_SAVED_DETAIL_ID] = anime.id
+        savedStateHandle[KEY_SAVED_DETAIL_TITLE] = anime.title
+        savedStateHandle[KEY_SAVED_DETAIL_DUB] = anime.isDub
         _detailState.value = DetailUiState(anime = anime, episodes = emptyList(), isLoading = true, error = null)
+
         detailJob = viewModelScope.launch {
-            runCatching {
-                val fullAnime = runCatching { client.getAnimeDetails(anime.id, anime.isDub) }
-                    .getOrDefault(anime)
+            runCatchingCancellable {
+                val detailResult = runCatchingCancellable { client.getAnimeDetails(anime.id, anime.isDub) }
+                val detailError = detailResult.exceptionOrNull()
+                if (detailError is OfflineException) throw detailError
+                val fullAnime = detailResult.getOrDefault(anime)
                 val eps = client.getEpisodes(fullAnime.id, fullAnime.isDub)
                 fullAnime to eps
             }.onSuccess { (fullAnime, eps) ->
+                if (favoritesRepo.isFavorite(fullAnime.uniqueKey)) {
+                    notificationManager.recordKnownEpisodeCount(fullAnime, eps.size)
+                }
                 _detailState.value = DetailUiState(
                     anime = fullAnime,
                     episodes = eps,
@@ -243,15 +416,7 @@ class AppViewModel : ViewModel() {
                     error = null,
                 )
             }.onFailure { err ->
-                val offlineEps = downloadRepo.downloads.value
-                    .filter { it.animeId == anime.id && it.isDub == anime.isDub && it.status == DownloadStatus.COMPLETED }
-                    .map {
-                        EpisodeItem(
-                            number = it.episodeNum,
-                            videoId = it.videoId,
-                            language = if (it.isDub) "ita" else "jpn",
-                        )
-                    }
+                val offlineEps = findCompletedOfflineEpisodes(anime.id, anime.isDub)
                 if (offlineEps.isNotEmpty()) {
                     _detailState.value = DetailUiState(
                         anime = anime,
@@ -271,6 +436,19 @@ class AppViewModel : ViewModel() {
         }
     }
 
+    private fun findCompletedOfflineEpisodes(animeId: String, isDub: Boolean): List<EpisodeItem> {
+        return downloadRepo.downloads.value
+            .filter { it.animeId == animeId && it.isDub == isDub && it.status == DownloadStatus.COMPLETED }
+            .sortedWith(compareBy { SearchUtils.episodeSortKey(it.episodeNum) })
+            .map {
+                EpisodeItem(
+                    number = it.episodeNum,
+                    videoId = it.videoId,
+                    language = if (it.isDub) "ita" else "jpn",
+                )
+            }
+    }
+
     fun switchDetailLanguage(wantDub: Boolean) {
         val current = _detailState.value.anime ?: return
         if (current.isDub == wantDub) return
@@ -285,16 +463,32 @@ class AppViewModel : ViewModel() {
 
     fun closeDetail() {
         detailJob?.cancel()
+        savedStateHandle.remove<String>(KEY_SAVED_DETAIL_ID)
+        savedStateHandle.remove<String>(KEY_SAVED_DETAIL_TITLE)
+        savedStateHandle.remove<Boolean>(KEY_SAVED_DETAIL_DUB)
         _detailState.value = DetailUiState()
     }
 
     fun toggleFavorite(anime: AnimeItem) {
+        val wasFav = favoritesRepo.isFavorite(anime.uniqueKey)
         favoritesRepo.toggleFavorite(anime)
+        if (!wasFav) {
+            val loadedEpCount = if (_detailState.value.anime?.uniqueKey == anime.uniqueKey) {
+                _detailState.value.episodes.size
+            } else {
+                0
+            }
+            notificationManager.recordKnownEpisodeCount(anime, maxOf(loadedEpCount, anime.releasedEpisodes))
+        }
     }
 
-    fun removeFavorite(uniqueKey: String) {
-        favoritesRepo.remove(uniqueKey)
-    }
+    fun removeFavorite(uniqueKey: String) = favoritesRepo.remove(uniqueKey)
+    fun removeHistory(uniqueKey: String) = historyRepo.remove(uniqueKey)
+
+    fun enqueueDownload(anime: AnimeItem, episode: EpisodeItem) = downloadRepo.enqueueDownload(anime, episode)
+    fun retryDownload(entry: DownloadEntry) = downloadRepo.retryDownload(entry)
+    fun cancelDownload(key: String) = downloadRepo.cancelDownload(key)
+    fun deleteDownload(key: String) = downloadRepo.deleteDownload(key)
 
     fun startPlayback(
         anime: AnimeItem,
@@ -320,18 +514,15 @@ class AppViewModel : ViewModel() {
     }
 
     fun quickWatchAnime(anime: AnimeItem) {
-        viewModelScope.launch {
-            val fullAnime = runCatching { client.getAnimeDetails(anime.id, anime.isDub) }.getOrDefault(anime)
-            val eps = runCatching { client.getEpisodes(fullAnime.id, fullAnime.isDub) }.getOrDefault(emptyList())
-            if (eps.isNotEmpty()) {
-                val hist = historyRepo.getEntry(fullAnime.uniqueKey)
-                val targetIdx = if (hist != null) {
-                    val idx = eps.indexOfFirst { it.number == hist.currentEpisodeNum }.coerceAtLeast(0)
-                    if (hist.completed && idx + 1 < eps.size) idx + 1 else idx
-                } else {
-                    0
-                }
-                startPlayback(fullAnime, eps, targetIdx, resumeFromHistory = true)
+        playbackLaunchJob?.cancel()
+        playbackLaunchJob = viewModelScope.launch {
+            val fullAnime = runCatchingCancellable { client.getAnimeDetails(anime.id, anime.isDub) }
+                .getOrDefault(anime)
+            val eps = runCatchingCancellable { client.getEpisodes(fullAnime.id, fullAnime.isDub) }
+                .getOrDefault(emptyList())
+            val resumeTarget = resolveResumeTarget(eps, historyRepo.getEntry(fullAnime.uniqueKey))
+            if (resumeTarget != null) {
+                startPlayback(fullAnime, eps, resumeTarget.episodeIndex, resumeFromHistory = true)
             } else {
                 openAnimeDetail(fullAnime)
             }
@@ -339,31 +530,33 @@ class AppViewModel : ViewModel() {
     }
 
     fun resumeFromHistory(entry: WatchHistoryEntry) {
-        viewModelScope.launch {
+        playbackLaunchJob?.cancel()
+        playbackLaunchJob = viewModelScope.launch {
             val fullAnime = if (entry.anime.malId == 0) {
-                runCatching { client.getAnimeDetails(entry.anime.id, entry.anime.isDub) }.getOrDefault(entry.anime)
+                runCatchingCancellable { client.getAnimeDetails(entry.anime.id, entry.anime.isDub) }
+                    .getOrDefault(entry.anime)
             } else {
                 entry.anime
             }
-            val loadedEps = runCatching { client.getEpisodes(fullAnime.id, fullAnime.isDub) }
+            val loadedEps = runCatchingCancellable { client.getEpisodes(fullAnime.id, fullAnime.isDub) }
                 .getOrElse {
-                    listOf(
-                        EpisodeItem(
-                            number = entry.currentEpisodeNum,
-                            videoId = entry.currentVideoId,
-                            language = if (fullAnime.isDub) "ita" else "jpn",
+                    val offline = findCompletedOfflineEpisodes(fullAnime.id, fullAnime.isDub)
+                    offline.ifEmpty {
+                        listOf(
+                            EpisodeItem(
+                                number = entry.currentEpisodeNum,
+                                videoId = entry.currentVideoId,
+                                language = if (fullAnime.isDub) "ita" else "jpn",
+                            )
                         )
-                    )
+                    }
                 }
-            if (loadedEps.isEmpty()) return@launch
-            val curIdx = loadedEps.indexOfFirst { it.number == entry.currentEpisodeNum }.coerceAtLeast(0)
-            val targetIdx = if (entry.completed && curIdx + 1 < loadedEps.size) curIdx + 1 else curIdx
-            val startMs = if (targetIdx == curIdx && !entry.completed) entry.progressMs else 0L
+            val target = resolveResumeTarget(loadedEps, entry) ?: return@launch
             _activePlayer.value = PlayerLaunchRequest(
                 anime = fullAnime,
                 episodes = loadedEps,
-                startIndex = targetIdx,
-                startPositionMs = startMs,
+                startIndex = target.episodeIndex,
+                startPositionMs = target.startPositionMs,
             )
         }
     }
@@ -377,21 +570,7 @@ class AppViewModel : ViewModel() {
                 isDub = entry.isDub,
                 audioLabel = if (entry.isDub) "Italiano" else "Giapponese",
             )
-        val siblingDownloads = downloadRepo.downloads.value
-            .filter {
-                it.animeId == entry.animeId &&
-                    it.isDub == entry.isDub &&
-                    it.status == DownloadStatus.COMPLETED
-            }
-            .sortedWith(compareBy { SearchUtils.episodeSortKey(it.episodeNum) })
-            .map {
-                EpisodeItem(
-                    number = it.episodeNum,
-                    videoId = it.videoId,
-                    language = if (it.isDub) "ita" else "jpn",
-                )
-            }
-        val eps = siblingDownloads.ifEmpty {
+        val eps = findCompletedOfflineEpisodes(entry.animeId, entry.isDub).ifEmpty {
             listOf(EpisodeItem(number = entry.episodeNum, videoId = entry.videoId))
         }
         val idx = eps.indexOfFirst { it.number == entry.episodeNum }.coerceAtLeast(0)
@@ -402,20 +581,173 @@ class AppViewModel : ViewModel() {
         _activePlayer.value = null
     }
 
-    // =========================================================================
-    // Impostazioni, Backup/Ripristino, Cache & Aggiornamenti Automatici
-    // =========================================================================
+    fun refreshCacheSize() {
+        viewModelScope.launch {
+            _cacheSizeBytes.value = withContext(Dispatchers.IO) { computeDirBytes(cacheDir) }
+        }
+    }
 
-    fun setThemeMode(mode: ThemeMode) = settingsRepo.update { it.copy(themeMode = mode) }
-    fun setDynamicColors(enabled: Boolean) = settingsRepo.update { it.copy(dynamicColors = enabled) }
-    fun setAutoSkipIntro(enabled: Boolean) = settingsRepo.update { it.copy(autoSkipIntro = enabled) }
-    fun setAutoSkipOutro(enabled: Boolean) = settingsRepo.update { it.copy(autoSkipOutro = enabled) }
-    fun setAutoCheckUpdates(enabled: Boolean) = settingsRepo.update { it.copy(autoCheckUpdates = enabled) }
-    fun setWifiOnlyDownloads(enabled: Boolean) = settingsRepo.update { it.copy(wifiOnlyDownloads = enabled) }
-    fun setAutoPipEnabled(enabled: Boolean) = settingsRepo.update { it.copy(autoPipEnabled = enabled) }
+    fun hasNotificationPermission(): Boolean = notificationManager.hasNotificationPermission()
 
-    fun setSettingsFeedback(message: String?) {
-        _settingsFeedback.value = message
+    fun setFavoriteNotificationsEnabled(enabled: Boolean) {
+        val interval = settings.value.notifyCheckIntervalHours
+        settingsRepo.update { it.copy(notifyFavoriteEpisodes = enabled) }
+        notificationManager.syncPeriodicSchedule(enabled = enabled, intervalHours = interval)
+        _settingsFeedback.value = if (enabled) {
+            "Notifiche Preferiti attive (controllo automatico ogni ${interval}h)."
+        } else {
+            "Notifiche nuovi episodi Preferiti disattivate."
+        }
+    }
+
+    fun checkFavoriteEpisodesNow() {
+        if (_isCheckingFavorites.value) return
+        favoriteCheckJob?.cancel()
+        favoriteCheckJob = viewModelScope.launch {
+            _isCheckingFavorites.value = true
+            runCatchingCancellable {
+                notificationManager.checkFavoritesForNewEpisodes(
+                    respectSettingToggle = false,
+                    postNotifications = true,
+                )
+            }.onSuccess { alerts ->
+                val favCount = favorites.value.size
+                _settingsFeedback.value = when {
+                    favCount == 0 -> "Aggiungi almeno un anime ai Preferiti per ricevere avvisi nuovi episodi."
+                    alerts.isNotEmpty() -> {
+                        val names = alerts.take(2).joinToString(", ") { "${it.anime.title} (Ep. ${it.episodeLabel})" }
+                        val extra = if (alerts.size > 2) " + altri ${alerts.size - 2}" else ""
+                        "Trovati ${alerts.size} nuovi episodi: $names$extra"
+                    }
+                    else -> "Nessun nuovo episodio per i tuoi $favCount Preferiti (baseline aggiornata)."
+                }
+            }.onFailure { err ->
+                _settingsFeedback.value = "Errore controllo Preferiti: ${err.message ?: "rete non disponibile"}"
+            }
+            _isCheckingFavorites.value = false
+        }
+    }
+
+    fun onSettingsEvent(
+        event: SettingsEvent,
+        onNavigateBack: () -> Unit,
+        onLaunchExportBackup: () -> Unit,
+        onLaunchImportBackup: () -> Unit,
+        onLaunchExportSuiteTv: () -> Unit,
+        onOpenSuiteTv: () -> Unit,
+        onRequestNotificationPermissionAndEnable: () -> Unit,
+    ) {
+        when (event) {
+            SettingsEvent.NavigateBack -> onNavigateBack()
+            is SettingsEvent.ChangeThemeMode -> settingsRepo.update { it.copy(themeMode = event.mode) }
+            is SettingsEvent.ToggleDynamicColors -> settingsRepo.update { it.copy(dynamicColors = event.enabled) }
+            is SettingsEvent.ToggleAutoSkipIntro -> settingsRepo.update { it.copy(autoSkipIntro = event.enabled) }
+            is SettingsEvent.ToggleAutoSkipOutro -> settingsRepo.update { it.copy(autoSkipOutro = event.enabled) }
+            is SettingsEvent.ToggleAutoPip -> settingsRepo.update { it.copy(autoPipEnabled = event.enabled) }
+            is SettingsEvent.ToggleWifiOnlyDownloads -> settingsRepo.update { it.copy(wifiOnlyDownloads = event.enabled) }
+            is SettingsEvent.ToggleAutoCheckUpdates -> settingsRepo.update { it.copy(autoCheckUpdates = event.enabled) }
+            is SettingsEvent.ToggleFavoriteNotifications -> {
+                if (event.enabled && !notificationManager.hasNotificationPermission()) {
+                    onRequestNotificationPermissionAndEnable()
+                } else {
+                    setFavoriteNotificationsEnabled(event.enabled)
+                }
+            }
+            is SettingsEvent.ChangeNotifyIntervalHours -> {
+                val safeHours = event.hours.coerceIn(1, 24)
+                settingsRepo.update { it.copy(notifyCheckIntervalHours = safeHours) }
+                if (settings.value.notifyFavoriteEpisodes) {
+                    notificationManager.syncPeriodicSchedule(enabled = true, intervalHours = safeHours)
+                }
+                _settingsFeedback.value = "Intervallo controllo Preferiti impostato a ogni ${safeHours}h."
+            }
+            SettingsEvent.CheckFavoriteEpisodesNow -> checkFavoriteEpisodesNow()
+            is SettingsEvent.ToggleSuiteTvQuickAction -> settingsRepo.update { it.copy(suiteTvQuickAction = event.enabled) }
+            SettingsEvent.ExportSuiteTvHistory -> onLaunchExportSuiteTv()
+            SettingsEvent.OpenSuiteTv -> onOpenSuiteTv()
+            SettingsEvent.CheckUpdatesNow -> checkForUpdates(manual = true)
+            SettingsEvent.OpenUpdateDialog -> showUpdateDialog()
+            SettingsEvent.ExportBackup -> onLaunchExportBackup()
+            SettingsEvent.ImportBackup -> onLaunchImportBackup()
+            SettingsEvent.ClearCache -> clearAppCache()
+        }
+    }
+
+    fun exportSuiteTvHistoryToUri(contentResolver: ContentResolver, uri: Uri) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatchingCancellable {
+                    val export = SuiteTvIntegration.buildTraktHistoryExport(history.value)
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(export.jsonPayload.toByteArray(Charsets.UTF_8))
+                    } ?: error("Impossibile scrivere sul file selezionato")
+                    export
+                }
+            }
+            _settingsFeedback.value = result.fold(
+                onSuccess = { exp ->
+                    if (exp.episodeCount == 0) {
+                        "File Suite TV creato, ma non risultano ancora episodi completati nella cronologia."
+                    } else {
+                        "Esportati ${exp.episodeCount} episodi (${exp.showCount} anime) per Suite TV! " +
+                            "Apri Suite TV → Impostazioni → Importa → Trakt e seleziona questo file."
+                    }
+                },
+                onFailure = { "Errore esportazione Suite TV: ${it.message}" },
+            )
+        }
+    }
+
+    fun exportBackupToUri(contentResolver: ContentResolver, uri: Uri) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatchingCancellable {
+                    val payload = buildBackupJson()
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(payload.toByteArray(Charsets.UTF_8))
+                    } ?: error("Impossibile scrivere sul file selezionato")
+                }
+            }
+            _settingsFeedback.value = result.fold(
+                onSuccess = { "Backup esportato con successo!" },
+                onFailure = { "Errore esportazione backup: ${it.message}" },
+            )
+        }
+    }
+
+    fun importBackupFromUri(contentResolver: ContentResolver, uri: Uri) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatchingCancellable {
+                    val rawText = readBoundedUtf8(contentResolver, uri, MAX_BACKUP_IMPORT_BYTES)
+                    importBackupJson(rawText).getOrThrow()
+                }
+            }
+            _settingsFeedback.value = result.fold(
+                onSuccess = { it },
+                onFailure = { "File backup non valido: ${it.message}" },
+            )
+        }
+    }
+
+    private fun readBoundedUtf8(contentResolver: ContentResolver, uri: Uri, maxBytes: Int): String {
+        val stream = contentResolver.openInputStream(uri)
+            ?: throw IOException("Impossibile leggere il file selezionato")
+        stream.use { input ->
+            val out = ByteArrayOutputStream()
+            val buf = ByteArray(16 * 1024)
+            var total = 0
+            while (true) {
+                val read = input.read(buf)
+                if (read == -1) break
+                total += read
+                if (total > maxBytes) {
+                    throw IOException("File troppo grande (limite massimo ${maxBytes / (1024 * 1024)} MB)")
+                }
+                out.write(buf, 0, read)
+            }
+            return out.toString(Charsets.UTF_8.name())
+        }
     }
 
     fun buildBackupJson(): String {
@@ -435,31 +767,42 @@ class AppViewModel : ViewModel() {
             historyRepo.mergeImport(parsed.history)
             favoritesRepo.mergeImport(parsed.favorites)
             settingsRepo.replace(parsed.settings)
+            notificationManager.syncPeriodicSchedule(
+                enabled = parsed.settings.notifyFavoriteEpisodes,
+                intervalHours = parsed.settings.notifyCheckIntervalHours,
+            )
             _searchState.update { it.copy(recentQueries = parsed.settings.recentQueries) }
             "Ripristino completato: ${parsed.history.size} cronologia, ${parsed.favorites.size} preferiti."
         }
     }
 
-    fun clearAppCache(context: Context, onComplete: (Long) -> Unit) {
+    private fun clearAppCache() {
         viewModelScope.launch {
-            val freed = withContext(Dispatchers.IO) {
-                var bytes = 0L
-                fun deleteDirContent(dir: File) {
-                    dir.listFiles()?.forEach { f ->
-                        if (f.isDirectory) {
-                            deleteDirContent(f)
-                            f.delete()
-                        } else {
-                            bytes += f.length()
-                            f.delete()
-                        }
-                    }
-                }
-                deleteDirContent(context.cacheDir)
-                bytes
+            val remaining = withContext(Dispatchers.IO) {
+                deleteDirContent(cacheDir)
+                computeDirBytes(cacheDir)
             }
+            _cacheSizeBytes.value = remaining
             _settingsFeedback.value = "Cache svuotata con successo."
-            onComplete(freed)
+        }
+    }
+
+    private fun computeDirBytes(dir: File): Long {
+        var total = 0L
+        dir.listFiles()?.forEach { f ->
+            total += if (f.isDirectory) computeDirBytes(f) else f.length()
+        }
+        return total
+    }
+
+    private fun deleteDirContent(dir: File) {
+        dir.listFiles()?.forEach { f ->
+            if (f.isDirectory) {
+                deleteDirContent(f)
+                f.delete()
+            } else {
+                f.delete()
+            }
         }
     }
 
@@ -473,7 +816,7 @@ class AppViewModel : ViewModel() {
             )
         }
         updateJob = viewModelScope.launch {
-            runCatching { updater.checkForUpdate() }
+            runCatchingCancellable { updater.checkForUpdate() }
                 .onSuccess { info ->
                     _updateState.update {
                         it.copy(
@@ -541,7 +884,7 @@ class AppViewModel : ViewModel() {
                     needsInstallPermission = false,
                 )
             }
-            runCatching {
+            runCatchingCancellable {
                 updater.downloadUpdateApk(info) { frac, dl, tot ->
                     _updateState.update {
                         it.copy(

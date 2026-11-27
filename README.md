@@ -4,6 +4,17 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.3.0 — Calendario Uscite, Notifiche Preferiti, Suite TV & Clean Code Hardening
+- **Calendario Uscite Settimanali**: nuova tab **Uscite** collegata in tempo reale al palinsesto settimanale (`/api/calendar`) con selettore giorno (`Oggi`, giorni della settimana, `TBA`), filtri rapidi (`Tutti`, `SUB`, `ITA`, `Preferiti`), orari locali stimati, stato **Disponibile / In ritardo / In pausa** e avvio diretto degli episodi usciti.
+- **Notifiche Locali Nuovi Episodi Preferiti**: worker periodico `WorkManager` configurabile in *Impostazioni → Notifiche Preferiti* (`1h / 3h / 6h / 12h` + tasto **"Controlla Preferiti ora"**) con supporto permesso `POST_NOTIFICATIONS` su Android 13+, baseline anti-spam al primo avvio e tap sulla notifica che apre direttamente la scheda dell'anime.
+- **Integrazione Suite TV (`https://www.suitetv.app/it`)**:
+  - Chip **"Traccia su Suite TV"** in ogni scheda anime, azione rapida nella Libreria e nella card fine episodio del player (apre direttamente l'app nativa Android `com.nicolasbordeaux.suitetv` tramite Android App Links, con fallback web).
+  - Esportazione cronologia episodi completati in formato **Trakt JSON** compatibile con l'importatore integrato di **Suite TV** (*Impostazioni → Integrazione Suite TV → Esporta JSON*).
+- **Architettura Clean Code, Sicurezza & Stabilità (unione miglioramenti PR #1 + PR #2)**:
+  - **Sicurezza fail-closed**: `AppUpdater` blocca l'aggiornamento se `.sha256` o firma certificato mancano o non combaciano e limita gli host GitHub ai 4 domini ufficiali; `UrlSecurityPolicy` con regex ancorate anti-bypass su embed/DoH; `DohFallbackDns` con protezione IPv6 completa (`::ffff:0:0/96`, `::/96`, `100::/64`, NAT64 `64:ff9b::/96`); query GraphQL Anime-Skip parametrizzate con `variables` JSON.
+  - **Zero I/O su Main Thread**: `JsonFileStore<T>` asincrono su `Dispatchers.IO` con salvataggio `.corrupt.bak`, backup SAF asincrono con limite anti-OOM 10 MB, merge import cronologia senza perdita degli episodi più vecchi, calcolo cache asincrono.
+  - **Architettura modulare & Resilienza**: container DI `AppContainer` (eliminato `AwAnimeApp.instance`), `PlayerViewModel` + `PlayerOverlays`, `AnimeUnityParser` + `VixCloudExtractor` + `SkipTimeRemoteDataSource`, `DownloadWorker` (`WorkManager` foreground con ripresa HTTP `Range` e `call.cancel()` immediato), `NetworkMonitor` offline fast-fail, `HttpClients` con pool condiviso, `runCatchingCancellable`, `collectAsStateWithLifecycle` e workflow CI Android.
+
 ## Novità v1.2.3 — PiP Nativo Completo & Zone Gesture Sicure
 - **Fix Picture-in-Picture (PiP)**:
   - Il video **non si mette più in pausa** entrando in finestra flottante (pausa spostata correttamente su `ON_STOP` anziché `ON_PAUSE`).

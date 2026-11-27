@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
@@ -69,6 +70,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.DownloadEntry
 import com.carloj005.awanime.data.model.DownloadStatus
@@ -76,6 +78,7 @@ import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.model.EpisodeProgress
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.model.formatTimeMs
+import com.carloj005.awanime.data.model.resolveResumeTarget
 import com.carloj005.awanime.ui.DetailUiState
 import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.components.ErrorRetryBox
@@ -91,6 +94,7 @@ fun DetailScreen(
     historyEntry: WatchHistoryEntry?,
     isFavorite: Boolean,
     downloads: List<DownloadEntry>,
+    shareBaseUrl: String,
     onBack: () -> Unit,
     onRetry: (AnimeItem) -> Unit,
     onToggleFavorite: (AnimeItem) -> Unit,
@@ -119,19 +123,8 @@ fun DetailScreen(
             .associateBy { it.episodeNum }
     }
 
-    val primaryEpisodeIndex = remember(state.episodes, historyEntry) {
-        if (state.episodes.isEmpty()) {
-            0
-        } else if (historyEntry != null) {
-            val idx = state.episodes.indexOfFirst { it.number == historyEntry.currentEpisodeNum }
-            if (idx >= 0) {
-                if (historyEntry.completed && idx + 1 < state.episodes.size) idx + 1 else idx
-            } else {
-                0
-            }
-        } else {
-            0
-        }
+    val resumeTarget = remember(state.episodes, historyEntry) {
+        resolveResumeTarget(state.episodes, historyEntry)
     }
 
     Box(
@@ -194,7 +187,7 @@ fun DetailScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             IconButton(
                                 onClick = {
-                                    val base = com.carloj005.awanime.AwAnimeApp.instance.animeUnityClient.baseUrl
+                                    val base = shareBaseUrl.trimEnd('/')
                                     val shareUrl = if (anime.slug.isNotBlank()) {
                                         "$base/anime/${anime.id}-${anime.slug}"
                                     } else {
@@ -348,15 +341,9 @@ fun DetailScreen(
                         }
                     }
 
-                    if (state.episodes.isNotEmpty()) {
-                        val targetEp = state.episodes[primaryEpisodeIndex]
-                        val ctaText = when {
-                            historyEntry == null -> "Guarda Episodio ${targetEp.number}"
-                            historyEntry.completed -> "Guarda Prossimo (Ep. ${targetEp.number})"
-                            else -> "Riprendi Ep. ${targetEp.number} (${formatTimeMs(historyEntry.progressMs)})"
-                        }
+                    if (resumeTarget != null) {
                         Button(
-                            onClick = { onPlayEpisode(anime, state.episodes, primaryEpisodeIndex) },
+                            onClick = { onPlayEpisode(anime, state.episodes, resumeTarget.episodeIndex) },
                             shape = CircleShape,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -364,100 +351,135 @@ fun DetailScreen(
                         ) {
                             Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(24.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(ctaText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                            Text(resumeTarget.detailCtaLabel(), fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             }
 
-            // Generi & Trama
-            if (anime.genres.isNotEmpty() || anime.plot.isNotBlank()) {
-                item {
-                    Card(
-                        shape = RoundedCornerShape(22.dp),
-                        colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerLow),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            if (anime.genres.isNotEmpty()) {
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                                    modifier = Modifier.padding(bottom = if (anime.plot.isNotBlank()) 10.dp else 0.dp),
-                                ) {
-                                    anime.genres.forEach { genre ->
-                                        BadgePill(
-                                            text = genre,
-                                            backgroundColor = cs.surfaceContainerHigh,
-                                            contentColor = cs.onSurfaceVariant,
-                                        )
-                                    }
+            // Generi, Trama & Link Esterni (Suite TV / AniList / MyAnimeList)
+            item {
+                val hasSuiteTvApp = remember(context) { SuiteTvIntegration.isSuiteTvInstalled(context) }
+                Card(
+                    shape = RoundedCornerShape(22.dp),
+                    colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerLow),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        if (anime.genres.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.padding(bottom = if (anime.plot.isNotBlank()) 10.dp else 0.dp),
+                            ) {
+                                anime.genres.forEach { genre ->
+                                    BadgePill(
+                                        text = genre,
+                                        backgroundColor = cs.surfaceContainerHigh,
+                                        contentColor = cs.onSurfaceVariant,
+                                    )
                                 }
                             }
+                        }
 
-                            if (anime.plot.isNotBlank()) {
-                                Text(
-                                    text = anime.plot,
-                                    color = cs.onSurfaceVariant,
-                                    fontSize = 13.sp,
-                                    lineHeight = 19.sp,
-                                    maxLines = if (plotExpanded) Int.MAX_VALUE else 4,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.clickable { plotExpanded = !plotExpanded },
-                                )
-                                Text(
-                                    text = if (plotExpanded) "Mostra meno" else "Leggi tutta la trama",
-                                    color = cs.primary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier
-                                        .padding(top = 6.dp)
-                                        .clickable { plotExpanded = !plotExpanded },
+                        if (anime.plot.isNotBlank()) {
+                            Text(
+                                text = anime.plot,
+                                color = cs.onSurfaceVariant,
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp,
+                                maxLines = if (plotExpanded) Int.MAX_VALUE else 4,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.clickable { plotExpanded = !plotExpanded },
+                            )
+                            Text(
+                                text = if (plotExpanded) "Mostra meno" else "Leggi tutta la trama",
+                                color = cs.primary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier
+                                    .padding(top = 6.dp)
+                                    .clickable { plotExpanded = !plotExpanded },
+                            )
+                        }
+
+                        if (anime.genres.isNotEmpty() || anime.plot.isNotBlank()) {
+                            Spacer(Modifier.height(10.dp))
+                        }
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            AssistChip(
+                                onClick = { SuiteTvIntegration.openAnimeInSuiteTv(context, anime) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Rounded.Tv,
+                                        contentDescription = null,
+                                        tint = cs.onPrimaryContainer,
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        text = if (hasSuiteTvApp) "Traccia su Suite TV" else "Suite TV",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                },
+                                trailingIcon = {
+                                    Icon(
+                                        Icons.AutoMirrored.Rounded.OpenInNew,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                },
+                                shape = CircleShape,
+                                colors = AssistChipDefaults.assistChipColors(
+                                    containerColor = cs.primaryContainer,
+                                    labelColor = cs.onPrimaryContainer,
+                                    trailingIconContentColor = cs.onPrimaryContainer,
+                                ),
+                                border = null,
+                            )
+                            if (anime.anilistId > 0) {
+                                AssistChip(
+                                    onClick = {
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse("https://anilist.co/anime/${anime.anilistId}"))
+                                            )
+                                        }
+                                    },
+                                    label = { Text("AniList", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
+                                    trailingIcon = {
+                                        Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    },
+                                    shape = CircleShape,
+                                    colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainerHigh),
+                                    border = null,
                                 )
                             }
-
-                            if (anime.anilistId > 0 || anime.malId > 0) {
-                                Spacer(Modifier.height(10.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    if (anime.anilistId > 0) {
-                                        AssistChip(
-                                            onClick = {
-                                                runCatching {
-                                                    context.startActivity(
-                                                        Intent(Intent.ACTION_VIEW, Uri.parse("https://anilist.co/anime/${anime.anilistId}"))
-                                                    )
-                                                }
-                                            },
-                                            label = { Text("AniList", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
-                                            trailingIcon = {
-                                                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
-                                            },
-                                            shape = CircleShape,
-                                            colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainerHigh),
-                                            border = null,
-                                        )
-                                    }
-                                    if (anime.malId > 0) {
-                                        AssistChip(
-                                            onClick = {
-                                                runCatching {
-                                                    context.startActivity(
-                                                        Intent(Intent.ACTION_VIEW, Uri.parse("https://myanimelist.net/anime/${anime.malId}"))
-                                                    )
-                                                }
-                                            },
-                                            label = { Text("MyAnimeList", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
-                                            trailingIcon = {
-                                                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
-                                            },
-                                            shape = CircleShape,
-                                            colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainerHigh),
-                                            border = null,
-                                        )
-                                    }
-                                }
+                            if (anime.malId > 0) {
+                                AssistChip(
+                                    onClick = {
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse("https://myanimelist.net/anime/${anime.malId}"))
+                                            )
+                                        }
+                                    },
+                                    label = { Text("MyAnimeList", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) },
+                                    trailingIcon = {
+                                        Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    },
+                                    shape = CircleShape,
+                                    colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainerHigh),
+                                    border = null,
+                                )
                             }
                         }
                     }

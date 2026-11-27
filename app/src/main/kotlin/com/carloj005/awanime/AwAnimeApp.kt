@@ -3,53 +3,21 @@ package com.carloj005.awanime
 import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
-import com.carloj005.awanime.data.network.AnimeUnityClient
-import com.carloj005.awanime.data.storage.DownloadRepository
-import com.carloj005.awanime.data.storage.FavoritesRepository
-import com.carloj005.awanime.data.storage.HistoryRepository
-import com.carloj005.awanime.data.storage.SettingsRepository
-import com.carloj005.awanime.data.update.AppUpdater
 
 class AwAnimeApp : Application(), ImageLoaderFactory {
 
-    lateinit var animeUnityClient: AnimeUnityClient
-        private set
-
-    lateinit var historyRepository: HistoryRepository
-        private set
-
-    lateinit var favoritesRepository: FavoritesRepository
-        private set
-
-    lateinit var settingsRepository: SettingsRepository
-        private set
-
-    lateinit var downloadRepository: DownloadRepository
-        private set
-
-    lateinit var appUpdater: AppUpdater
+    lateinit var container: AppContainer
         private set
 
     override fun onCreate() {
         super.onCreate()
-        instance = this
-        animeUnityClient = AnimeUnityClient(applicationContext)
-        settingsRepository = SettingsRepository(applicationContext)
-        historyRepository = HistoryRepository(applicationContext)
-        favoritesRepository = FavoritesRepository(applicationContext)
-        downloadRepository = DownloadRepository(applicationContext, animeUnityClient, settingsRepository)
-        appUpdater = AppUpdater(applicationContext)
+        container = AppContainer(this)
     }
 
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
-            .okHttpClient(animeUnityClient.imageOkHttpClient)
+            .okHttpClient(container.httpClients.imageClient)
             .crossfade(true)
             .build()
-    }
-
-    companion object {
-        lateinit var instance: AwAnimeApp
-            private set
     }
 }

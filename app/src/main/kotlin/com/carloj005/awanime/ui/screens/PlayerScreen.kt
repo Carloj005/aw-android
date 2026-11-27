@@ -8,66 +8,17 @@ import android.media.AudioManager
 import android.net.Uri
 import android.view.WindowManager
 import androidx.annotation.OptIn
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.List
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.AspectRatio
-import androidx.compose.material.icons.rounded.Brightness6
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.FastForward
-import androidx.compose.material.icons.rounded.Forward10
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.LockOpen
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PictureInPictureAlt
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Replay10
-import androidx.compose.material.icons.rounded.SkipNext
-import androidx.compose.material.icons.rounded.SkipPrevious
-import androidx.compose.material.icons.rounded.Speed
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -81,13 +32,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -97,6 +44,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -116,16 +65,14 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
-import com.carloj005.awanime.AwAnimeApp
+import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.SkipKind
 import com.carloj005.awanime.data.model.SkipSegment
 import com.carloj005.awanime.data.model.StreamCandidate
-import com.carloj005.awanime.data.model.formatTimeMs
 import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.ui.PlayerLaunchRequest
-import com.carloj005.awanime.ui.components.BadgePill
-import com.carloj005.awanime.ui.theme.BadgeGreen
+import com.carloj005.awanime.ui.PlayerViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -141,6 +88,21 @@ private enum class VerticalGestureZone {
     BRIGHTNESS,
     VOLUME,
 }
+
+private const val GESTURE_SAFE_TOP_FRACTION = 0.18f
+private const val GESTURE_SAFE_BOTTOM_FRACTION = 0.82f
+private const val BRIGHTNESS_MIN_X_FRACTION = 0.10f
+private const val BRIGHTNESS_MAX_X_FRACTION = 0.35f
+private const val VOLUME_MIN_X_FRACTION = 0.65f
+private const val VOLUME_MAX_X_FRACTION = 0.90f
+private const val DOUBLE_TAP_LEFT_FRACTION = 0.38f
+private const val DOUBLE_TAP_RIGHT_FRACTION = 0.62f
+
+private const val SEEK_DELTA_MS = 10_000L
+private const val FALLBACK_OP_SKIP_MS = 85_000L
+private const val OUTRO_COUNTDOWN_WINDOW_MS = 15_000L
+private const val CONTROLS_AUTO_HIDE_MS = 3_500L
+private const val PROGRESS_POLL_INTERVAL_MS = 400L
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -195,125 +157,71 @@ fun PlayerScreen(
     onPlayingStateChanged: (Boolean) -> Unit = {},
     onEnterPip: () -> Unit = {},
     onClose: () -> Unit,
+    playerVm: PlayerViewModel = viewModel(factory = PlayerViewModel.Factory),
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val activity = remember(context) { context.findActivity() }
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
-    val app = AwAnimeApp.instance
-    val client = app.animeUnityClient
-    val historyRepo = app.historyRepository
-    val downloadRepo = app.downloadRepository
     val cs = MaterialTheme.colorScheme
 
-    var currentIndex by remember(request) { mutableIntStateOf(request.startIndex) }
-    var pendingSeekMs by remember(request) { mutableLongStateOf(request.startPositionMs) }
-    val currentEpisode = request.episodes[currentIndex.coerceIn(0, request.episodes.lastIndex)]
-    val hasNextEpisode = currentIndex + 1 < request.episodes.size
+    LaunchedEffect(request) {
+        playerVm.initializeRequest(request)
+    }
 
-    var isResolving by remember { mutableStateOf(true) }
+    val session by playerVm.state.collectAsStateWithLifecycle()
+    val currentEpisode = playerVm.currentEpisode(request)
+    val hasNextEpisode = session.currentIndex + 1 < request.episodes.size
+
     var isBuffering by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var qualityBadge by remember { mutableStateOf("1080p HLS") }
-    var streamCandidates by remember { mutableStateOf<List<StreamCandidate>>(emptyList()) }
-    var candidateIdx by remember { mutableIntStateOf(0) }
-    var retryCounter by remember { mutableIntStateOf(0) }
-    var hasAutoRefreshedToken by remember(currentIndex) { mutableStateOf(false) }
-    var isLocalOfflineStream by remember(currentIndex) { mutableStateOf(false) }
-
-    // Smart Skip OP/ED (VixCloud native timestamps + multi-DB cross-validated fallback)
-    var skipSegments by remember { mutableStateOf<List<SkipSegment>>(emptyList()) }
-    var skipFetchedWithDuration by remember(currentIndex, retryCounter) { mutableStateOf(false) }
-    var autoSkippedKinds by remember(currentIndex) { mutableStateOf<Set<SkipKind>>(emptySet()) }
-    var dismissedSkipKinds by remember(currentIndex) { mutableStateOf<Set<SkipKind>>(emptySet()) }
-    var undoSkipInfo by remember { mutableStateOf<Pair<String, Long>?>(null) }
-
-    // Outro Next-Episode Countdown stile Netflix
-    var outroCountdownCancelled by remember(currentIndex) { mutableStateOf(false) }
-    var outroCountdownSeconds by remember(currentIndex) { mutableIntStateOf(5) }
-    var outroCountdownActive by remember(currentIndex) { mutableStateOf(false) }
-
-    // Controlli UI, Blocco Schermo, Drawer Episodi, Gesture Luminosità/Volume
     var controlsVisible by remember { mutableStateOf(true) }
     var isScreenLocked by remember { mutableStateOf(false) }
     var showUnlockPill by remember { mutableStateOf(false) }
     var episodeDrawerOpen by remember { mutableStateOf(false) }
+
+    var outroCountdownCancelled by remember(session.currentIndex) { mutableStateOf(false) }
+    var outroCountdownSeconds by remember(session.currentIndex) { mutableIntStateOf(5) }
+    var outroCountdownActive by remember(session.currentIndex) { mutableStateOf(false) }
 
     var isPlaying by remember { mutableStateOf(true) }
     var positionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var isSeeking by remember { mutableStateOf(false) }
     var sliderPosition by remember { mutableFloatStateOf(0f) }
-
-    val speeds = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
-    var speedIdx by remember { mutableIntStateOf(1) }
-    val resizeModes = listOf(
-        AspectRatioFrameLayout.RESIZE_MODE_FIT to "Adatta",
-        AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom",
-        AspectRatioFrameLayout.RESIZE_MODE_FILL to "Riempi",
-    )
-    var resizeIdx by remember { mutableIntStateOf(0) }
     var seekFeedback by remember { mutableStateOf<String?>(null) }
 
-    // HUD luminosità (sinistra) & volume (destra)
-    var brightnessLevel by remember {
-        mutableFloatStateOf(
-            activity?.window?.attributes?.screenBrightness?.takeIf { it >= 0f } ?: 0.55f
+    val speeds = remember { listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f) }
+    var speedIdx by remember { mutableIntStateOf(1) }
+    val resizeModes = remember {
+        listOf(
+            AspectRatioFrameLayout.RESIZE_MODE_FIT to "Adatta",
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM to "Zoom",
+            AspectRatioFrameLayout.RESIZE_MODE_FILL to "Riempi",
         )
     }
-    val maxVolume = remember(audioManager) { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }
+    var resizeIdx by remember { mutableIntStateOf(0) }
+
+    var brightnessLevel by remember {
+        mutableFloatStateOf(activity?.window?.attributes?.screenBrightness?.takeIf { it >= 0f } ?: 0.55f)
+    }
+    val maxVolume = remember(audioManager) {
+        audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+    }
     var volumeFraction by remember {
         mutableFloatStateOf(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVolume.toFloat())
     }
     var activeGestureHud by remember { mutableStateOf<Pair<Boolean, Float>?>(null) }
 
-    // Blocca landscape + fullscreen immersivo + schermo sempre acceso
-    DisposableEffect(activity) {
-        val prevOrientation = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        val prevBrightness = activity?.window?.attributes?.screenBrightness
-            ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val insetsController = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
-        insetsController?.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+    BindImmersivePlayerWindow(activity = activity, isInPipMode = isInPipMode)
 
-        onDispose {
-            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            activity?.window?.let { win ->
-                val attrs = win.attributes
-                attrs.screenBrightness = prevBrightness
-                win.attributes = attrs
-            }
-            insetsController?.show(WindowInsetsCompat.Type.systemBars())
-            activity?.requestedOrientation = prevOrientation
-        }
-    }
-
-    // Ripristina fullscreen immersivo pulito al rientro dalla finestra PiP
-    LaunchedEffect(isInPipMode, activity) {
-        if (!isInPipMode) {
-            val insetsController = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
-            insetsController?.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
-        }
-    }
-
-    // Factory HTTP dinamica (aggiorna Referer/Origin in base al mirror VixCloud attivo)
-    val httpDataSourceFactory = remember(client) {
-        OkHttpDataSource.Factory(client.mediaOkHttpClient)
+    val httpDataSourceFactory = remember(playerVm.mediaHttpClient) {
+        OkHttpDataSource.Factory(playerVm.mediaHttpClient)
             .setUserAgent(AnimeUnityClient.USER_AGENT)
             .setDefaultRequestProperties(
-                mapOf(
-                    "Referer" to "https://vixcloud.cc/",
-                    "Origin" to "https://vixcloud.cc",
-                )
+                mapOf("Referer" to "https://vixcloud.cc/", "Origin" to "https://vixcloud.cc")
             )
     }
 
-    // ExoPlayer Media3: HLS reale 1080p, LoadControl bilanciato per skip rapidi, ErrorPolicy anti-503/429, AudioFocus
     val exoPlayer = remember(context) {
         val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
@@ -342,42 +250,34 @@ fun PlayerScreen(
             .build()
     }
 
-    // State sempre aggiornati per evitare chiusure stantie nei DisposableEffect tra un episodio e l'altro
-    val latestEpisode by rememberUpdatedState(currentEpisode)
+    val latestRequest by rememberUpdatedState(request)
     val latestDurationMs by rememberUpdatedState(durationMs)
     val latestOnPlayingChanged by rememberUpdatedState(onPlayingStateChanged)
 
-    fun persistCurrentProgress(forceCompleted: Boolean = false) {
-        val ep = latestEpisode
+    fun persistNow(forceCompleted: Boolean = false) {
         val dur = exoPlayer.duration.takeIf { it > 0L } ?: latestDurationMs
-        val pos = if (forceCompleted && dur > 0L) dur else exoPlayer.currentPosition.coerceAtLeast(0L)
-        if (dur > 0L || pos > 2_000L) {
-            historyRepo.updateProgress(
-                anime = request.anime,
-                episodeNum = ep.number,
-                videoId = ep.videoId,
-                positionMs = pos,
-                durationMs = dur,
-            )
-        }
+        playerVm.persistProgress(
+            request = latestRequest,
+            positionMs = exoPlayer.currentPosition,
+            durationMs = dur,
+            forceCompleted = forceCompleted,
+        )
     }
 
-    fun switchEpisode(newIndex: Int) {
-        if (newIndex !in request.episodes.indices) return
-        persistCurrentProgress()
-        val nextEp = request.episodes[newIndex]
-        val saved = historyRepo.getEpisodeProgress(request.anime.uniqueKey, nextEp.number)
-        pendingSeekMs = if (saved != null && !saved.completed) saved.positionMs else 0L
-        episodeDrawerOpen = false
-        outroCountdownCancelled = false
-        outroCountdownActive = false
-        currentIndex = newIndex
+    fun switchToEpisode(newIndex: Int) {
+        val dur = exoPlayer.duration.takeIf { it > 0L } ?: latestDurationMs
+        if (playerVm.switchEpisode(newIndex, latestRequest, exoPlayer.currentPosition, dur)) {
+            exoPlayer.stop()
+            episodeDrawerOpen = false
+            outroCountdownCancelled = false
+            outroCountdownActive = false
+        }
     }
 
     fun skipSegmentNow(segment: SkipSegment, wasAuto: Boolean = false) {
         val fromPos = exoPlayer.currentPosition.coerceAtLeast(0L)
         if (segment.kind == SkipKind.OUTRO && hasNextEpisode && durationMs > 0L && segment.endMs >= durationMs - 5_000L) {
-            switchEpisode(currentIndex + 1)
+            switchToEpisode(session.currentIndex + 1)
             return
         }
         val target = if (durationMs > 1_000L) {
@@ -393,13 +293,29 @@ fun PlayerScreen(
                 SkipKind.OUTRO -> "Outro saltata"
                 SkipKind.RECAP -> "Riepilogo saltato"
             }
-            undoSkipInfo = label to fromPos
+            playerVm.recordAutoSkip(segment.kind, label, fromPos)
         } else {
             seekFeedback = segment.kind.label
         }
     }
 
-    DisposableEffect(exoPlayer, currentIndex, streamCandidates, candidateIdx, isLocalOfflineStream, hasAutoRefreshedToken) {
+    // Bind newly resolved stream candidate onto ExoPlayer
+    LaunchedEffect(session.preparedGeneration) {
+        val cand = session.activeCandidate ?: return@LaunchedEffect
+        if (!session.isLocalOfflineStream) {
+            val origin = session.referer.trimEnd('/')
+            httpDataSourceFactory.setDefaultRequestProperties(
+                mapOf("Referer" to session.referer, "Origin" to origin)
+            )
+        }
+        exoPlayer.setMediaItem(buildMediaItem(cand))
+        exoPlayer.prepare()
+        if (session.pendingSeekMs > 0L) exoPlayer.seekTo(session.pendingSeekMs)
+        exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
+        exoPlayer.playWhenReady = true
+    }
+
+    DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 isBuffering = state == Player.STATE_BUFFERING
@@ -407,9 +323,10 @@ fun PlayerScreen(
                     durationMs = exoPlayer.duration.coerceAtLeast(0L)
                 }
                 if (state == Player.STATE_ENDED) {
-                    persistCurrentProgress(forceCompleted = true)
-                    if (hasNextEpisode && !outroCountdownCancelled) {
-                        switchEpisode(currentIndex + 1)
+                    persistNow(forceCompleted = true)
+                    val curIdx = playerVm.state.value.currentIndex
+                    if (curIdx + 1 < latestRequest.episodes.size && !outroCountdownCancelled) {
+                        switchToEpisode(curIdx + 1)
                     }
                 }
             }
@@ -417,58 +334,39 @@ fun PlayerScreen(
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
                 latestOnPlayingChanged(playing)
-                if (!playing) persistCurrentProgress()
+                if (!playing) persistNow()
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                val resumePos = exoPlayer.currentPosition.coerceAtLeast(positionMs).coerceAtLeast(pendingSeekMs)
-                val httpCode = findHttpStatusCode(error)
-                val nextCand = candidateIdx + 1
-                if (nextCand < streamCandidates.size) {
-                    candidateIdx = nextCand
-                    val cand = streamCandidates[nextCand]
-                    qualityBadge = cand.qualityLabel
-                    exoPlayer.setMediaItem(buildMediaItem(cand))
-                    exoPlayer.prepare()
-                    if (resumePos > 0L) exoPlayer.seekTo(resumePos)
-                    exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
-                    exoPlayer.playWhenReady = true
-                } else if (!isLocalOfflineStream && !hasAutoRefreshedToken &&
-                    (httpCode == null || httpCode in setOf(403, 410, 429, 500, 502, 503, 504))
-                ) {
-                    // Rinnovo automatico singolo di token/stream conservando esattamente il punto raggiunto
-                    hasAutoRefreshedToken = true
-                    pendingSeekMs = resumePos
-                    retryCounter++
-                } else {
-                    pendingSeekMs = resumePos
-                    val detail = if (httpCode != null) "HTTP $httpCode" else error.errorCodeName
-                    errorMessage = "Errore stream ($detail). Tocca Riprova."
-                    isBuffering = false
-                }
+                isBuffering = false
+                val resumePos = maxOf(
+                    exoPlayer.currentPosition,
+                    positionMs,
+                    playerVm.state.value.pendingSeekMs,
+                )
+                playerVm.onPlaybackError(
+                    request = latestRequest,
+                    httpCode = findHttpStatusCode(error),
+                    errorCodeName = error.errorCodeName,
+                    resumePositionMs = resumePos,
+                )
             }
         }
         exoPlayer.addListener(listener)
-        onDispose { exoPlayer.removeListener(listener) }
-    }
-
-    DisposableEffect(exoPlayer) {
         onDispose {
+            exoPlayer.removeListener(listener)
             latestOnPlayingChanged(false)
-            persistCurrentProgress()
+            persistNow()
             exoPlayer.release()
         }
     }
 
-    // In PiP Android mette l'Activity in PAUSED ma NON in STOPPED:
-    // quindi salviamo il progresso su ON_PAUSE senza mettere in pausa, e mettiamo in pausa su ON_STOP
-    // (quando si chiude la finestra PiP sulla X, si spegne lo schermo o si esce senza PiP)!
     DisposableEffect(lifecycleOwner, exoPlayer) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) {
-                persistCurrentProgress()
+                persistNow()
             } else if (event == Lifecycle.Event.ON_STOP) {
-                persistCurrentProgress()
+                persistNow()
                 exoPlayer.pause()
             }
         }
@@ -476,21 +374,18 @@ fun PlayerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Riceve i comandi dai pulsanti nativi della finestra flottante PiP (-10s / Play-Pausa / +10s)
     LaunchedEffect(pipCommands, exoPlayer) {
         pipCommands.collect { cmd ->
             when (cmd) {
-                PipCommand.TOGGLE_PLAY -> {
-                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
-                }
+                PipCommand.TOGGLE_PLAY -> if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                 PipCommand.REWIND_10 -> {
-                    val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
+                    val target = (exoPlayer.currentPosition - SEEK_DELTA_MS).coerceAtLeast(0L)
                     exoPlayer.seekTo(target)
                     positionMs = target
                 }
                 PipCommand.FORWARD_10 -> {
                     val maxPos = if (latestDurationMs > 1_000L) latestDurationMs - 1_000L else Long.MAX_VALUE
-                    val target = (exoPlayer.currentPosition + 10_000L).coerceIn(0L, maxPos)
+                    val target = (exoPlayer.currentPosition + SEEK_DELTA_MS).coerceIn(0L, maxPos)
                     exoPlayer.seekTo(target)
                     positionMs = target
                 }
@@ -498,118 +393,31 @@ fun PlayerScreen(
         }
     }
 
-    // Carica episodio + estrae timestamp VixCloud + fallback AniSkip asincrono
-    LaunchedEffect(currentIndex, retryCounter) {
-        isResolving = true
-        errorMessage = null
-        streamCandidates = emptyList()
-        skipSegments = emptyList()
-        skipFetchedWithDuration = false
-        autoSkippedKinds = emptySet()
-        dismissedSkipKinds = emptySet()
-        undoSkipInfo = null
-        outroCountdownActive = false
-        outroCountdownCancelled = false
-        candidateIdx = 0
-        exoPlayer.stop()
-
-        val ep = request.episodes[currentIndex.coerceIn(0, request.episodes.lastIndex)]
-        val localFile = downloadRepo.getLocalFileIfReady(request.anime.id, request.anime.isDub, ep.number)
-        if (localFile != null) {
-            isLocalOfflineStream = true
-            qualityBadge = "OFFLINE"
-            val uri = Uri.fromFile(localFile)
-            val cand = StreamCandidate(url = uri.toString(), isHls = false, qualityLabel = "OFFLINE")
-            streamCandidates = listOf(cand)
-            isResolving = false
-            exoPlayer.setMediaItem(buildMediaItem(cand))
-            exoPlayer.prepare()
-            if (pendingSeekMs > 0L) exoPlayer.seekTo(pendingSeekMs)
-            exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
-            exoPlayer.playWhenReady = true
-            if (ep.runtimeSeconds > 0) {
-                skipFetchedWithDuration = true
-                val validated = client.fetchValidatedSkipSegments(request.anime, ep.number, ep.runtimeSeconds)
-                if (validated.isNotEmpty()) skipSegments = validated
-            }
-            return@LaunchedEffect
-        }
-
-        isLocalOfflineStream = false
-        runCatching { client.resolveStream(request.anime.id, ep.videoId) }
-            .onSuccess { res ->
-                val origin = res.referer.trimEnd('/')
-                httpDataSourceFactory.setDefaultRequestProperties(
-                    mapOf(
-                        "Referer" to res.referer,
-                        "Origin" to origin,
-                    )
-                )
-                qualityBadge = res.qualityLabel
-                streamCandidates = res.candidates
-                skipSegments = res.skipSegments
-                candidateIdx = 0
-                isResolving = false
-                exoPlayer.setMediaItem(buildMediaItem(res.candidates.first()))
-                exoPlayer.prepare()
-                if (pendingSeekMs > 0L) exoPlayer.seekTo(pendingSeekMs)
-                exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
-                exoPlayer.playWhenReady = true
-
-                // Se VixCloud non aveva timestamp e conosciamo già la durata, eseguiamo validazione incrociata
-                if (res.skipSegments.isNotEmpty()) {
-                    skipFetchedWithDuration = true
-                } else if (ep.runtimeSeconds > 0) {
-                    skipFetchedWithDuration = true
-                    val fallback = client.fetchValidatedSkipSegments(request.anime, ep.number, ep.runtimeSeconds)
-                    if (fallback.isNotEmpty()) {
-                        skipSegments = fallback
-                    }
-                }
-            }
-            .onFailure { err ->
-                isResolving = false
-                errorMessage = err.message ?: "Impossibile ottenere lo stream dell'episodio"
-            }
+    LaunchedEffect(durationMs, session.currentIndex, session.skipFetchedWithDuration, session.isResolving) {
+        playerVm.fetchSkipFallbackWithRealDuration(request, durationMs)
     }
 
-    // Se ep.runtimeSeconds era 0 (es. download offline o ripresa da cronologia), interroga i DB appena ExoPlayer conosce la durata reale!
-    LaunchedEffect(durationMs, currentIndex, retryCounter, skipFetchedWithDuration, isResolving) {
-        if (!isResolving && !skipFetchedWithDuration && skipSegments.isEmpty() && durationMs >= 60_000L) {
-            skipFetchedWithDuration = true
-            val realSec = (durationMs / 1000L).toInt()
-            val fallback = client.fetchValidatedSkipSegments(request.anime, currentEpisode.number, realSec)
-            if (fallback.isNotEmpty()) {
-                skipSegments = fallback
-            }
-        }
+    val activeSkipSegment = remember(positionMs, session.skipSegments, session.dismissedSkipKinds) {
+        session.skipSegments.firstOrNull { it.kind !in session.dismissedSkipKinds && it.contains(positionMs) }
     }
 
-    // Segmento attivo nella posizione corrente (Intro / Outro / Recap), escludendo quelli chiusi dall'utente
-    val activeSkipSegment = remember(positionMs, skipSegments, dismissedSkipKinds) {
-        skipSegments.firstOrNull { it.kind !in dismissedSkipKinds && it.contains(positionMs) }
-    }
-
-    // Trigger Auto-Skip se abilitato nelle Impostazioni (sull'Ep. 1 auto-skippa INTRO solo se verificato!)
     LaunchedEffect(activeSkipSegment, settings.autoSkipIntro, settings.autoSkipOutro, isPlaying, currentEpisode.number) {
         val seg = activeSkipSegment ?: return@LaunchedEffect
-        if (!isPlaying || seg.kind in autoSkippedKinds) return@LaunchedEffect
+        if (!isPlaying || seg.kind in session.autoSkippedKinds) return@LaunchedEffect
         val isEpisodeOne = currentEpisode.number.trim() == "1"
         val allowIntroAuto = settings.autoSkipIntro && (seg.verified || !isEpisodeOne)
         val shouldAuto = (seg.kind == SkipKind.INTRO && allowIntroAuto) ||
             (seg.kind == SkipKind.OUTRO && settings.autoSkipOutro)
         if (shouldAuto) {
-            autoSkippedKinds = autoSkippedKinds + seg.kind
             skipSegmentNow(seg, wasAuto = true)
         }
     }
 
-    // Trigger Countdown "Prossimo episodio tra 5s" durante l'Outro (o ultimi 15s)
     val inOutroForNextEp = hasNextEpisode && !outroCountdownCancelled && (
         activeSkipSegment?.kind == SkipKind.OUTRO ||
-            (durationMs > 60_000L && positionMs >= durationMs - 15_000L)
+            (durationMs > 60_000L && positionMs >= durationMs - OUTRO_COUNTDOWN_WINDOW_MS)
         )
-    LaunchedEffect(inOutroForNextEp, isPlaying, currentIndex) {
+    LaunchedEffect(inOutroForNextEp, isPlaying, session.currentIndex) {
         if (inOutroForNextEp && isPlaying) {
             outroCountdownActive = true
             for (sec in 5 downTo 1) {
@@ -621,14 +429,13 @@ fun PlayerScreen(
                 }
             }
             outroCountdownActive = false
-            switchEpisode(currentIndex + 1)
+            switchToEpisode(session.currentIndex + 1)
         } else {
             outroCountdownActive = false
         }
     }
 
-    // Loop posizione 400ms + salvataggio cronologia ogni 5s
-    LaunchedEffect(exoPlayer, currentIndex) {
+    LaunchedEffect(exoPlayer, session.currentIndex) {
         var tick = 0
         while (true) {
             if (!isSeeking) {
@@ -639,24 +446,21 @@ fun PlayerScreen(
                 }
             }
             tick++
-            if (tick % 12 == 0 && exoPlayer.isPlaying) persistCurrentProgress()
-            delay(400L)
+            if (tick % 12 == 0 && exoPlayer.isPlaying) persistNow()
+            delay(PROGRESS_POLL_INTERVAL_MS)
         }
     }
 
-    // Auto-hide controlli (NON nasconde mai mentre l'utente sta trascinando lo Slider!)
     LaunchedEffect(controlsVisible, isPlaying, episodeDrawerOpen, isSeeking) {
-        if (!controlsVisible && isSeeking) {
-            isSeeking = false
-        }
+        if (!controlsVisible && isSeeking) isSeeking = false
         if (controlsVisible && isPlaying && !episodeDrawerOpen && !isSeeking) {
-            delay(3500L)
+            delay(CONTROLS_AUTO_HIDE_MS)
             controlsVisible = false
         }
     }
     LaunchedEffect(showUnlockPill) {
         if (showUnlockPill) {
-            delay(2500L)
+            delay(2_500L)
             showUnlockPill = false
         }
     }
@@ -666,10 +470,10 @@ fun PlayerScreen(
             seekFeedback = null
         }
     }
-    LaunchedEffect(undoSkipInfo) {
-        if (undoSkipInfo != null) {
-            delay(4500L)
-            undoSkipInfo = null
+    LaunchedEffect(session.undoSkipInfo) {
+        if (session.undoSkipInfo != null) {
+            delay(4_500L)
+            playerVm.clearUndoSkip()
         }
     }
 
@@ -693,19 +497,17 @@ fun PlayerScreen(
                 detectTapGestures(
                     onTap = {
                         if (isInPipMode) return@detectTapGestures
-                        if (isScreenLocked) {
-                            showUnlockPill = !showUnlockPill
-                        } else if (episodeDrawerOpen) {
-                            episodeDrawerOpen = false
-                        } else {
-                            controlsVisible = !controlsVisible
+                        when {
+                            isScreenLocked -> showUnlockPill = !showUnlockPill
+                            episodeDrawerOpen -> episodeDrawerOpen = false
+                            else -> controlsVisible = !controlsVisible
                         }
                     },
                     onDoubleTap = { offset ->
                         if (!isInPipMode && !isScreenLocked && !episodeDrawerOpen) {
                             when {
-                                offset.x < size.width * 0.38f -> seekBy(-10_000L, "-10s")
-                                offset.x > size.width * 0.62f -> seekBy(10_000L, "+10s")
+                                offset.x < size.width * DOUBLE_TAP_LEFT_FRACTION -> seekBy(-SEEK_DELTA_MS, "-10s")
+                                offset.x > size.width * DOUBLE_TAP_RIGHT_FRACTION -> seekBy(SEEK_DELTA_MS, "+10s")
                             }
                         }
                     },
@@ -717,13 +519,12 @@ fun PlayerScreen(
                     onDragStart = { startOffset ->
                         val w = size.width.toFloat()
                         val h = size.height.toFloat()
-                        // Fasce sicure interne: esclude bordi superiore (notifiche), inferiore (uscita app),
-                        // bordi laterali esterni (gesture Indietro) e fascia centrale neutra!
-                        val inSafeVerticalBand = startOffset.y in (h * 0.18f)..(h * 0.82f)
+                        val inSafeBand = startOffset.y in (h * GESTURE_SAFE_TOP_FRACTION)..(h * GESTURE_SAFE_BOTTOM_FRACTION)
                         activeZone = when {
-                            !inSafeVerticalBand -> VerticalGestureZone.NONE
-                            startOffset.x in (w * 0.10f)..(w * 0.35f) -> VerticalGestureZone.BRIGHTNESS
-                            startOffset.x in (w * 0.65f)..(w * 0.90f) -> {
+                            !inSafeBand -> VerticalGestureZone.NONE
+                            startOffset.x in (w * BRIGHTNESS_MIN_X_FRACTION)..(w * BRIGHTNESS_MAX_X_FRACTION) ->
+                                VerticalGestureZone.BRIGHTNESS
+                            startOffset.x in (w * VOLUME_MIN_X_FRACTION)..(w * VOLUME_MAX_X_FRACTION) -> {
                                 volumeFraction = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVolume.toFloat()
                                 VerticalGestureZone.VOLUME
                             }
@@ -761,7 +562,6 @@ fun PlayerScreen(
                 )
             },
     ) {
-        // Video Surface nativa Media3
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
@@ -774,12 +574,11 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Spinner caricamento / buffering
-        if (isResolving || isBuffering) {
+        if (session.isResolving || isBuffering) {
             Box(modifier = Modifier.align(Alignment.Center)) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = cs.primary)
-                    if (isResolving && !isInPipMode) {
+                    if (session.isResolving && !isInPipMode) {
                         Spacer(Modifier.height(10.dp))
                         Text("Risoluzione stream 1080p HLS...", color = Color.White, fontSize = 13.sp)
                     }
@@ -787,585 +586,173 @@ fun PlayerScreen(
             }
         }
 
-        // HUD verticale Luminosità / Volume
         if (!isInPipMode) {
-            activeGestureHud?.let { (isBrightness, fraction) ->
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = Color(0xCC11131C),
-                    modifier = Modifier
-                        .align(if (isBrightness) Alignment.CenterStart else Alignment.CenterEnd)
-                        .padding(horizontal = 36.dp),
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 16.dp),
-                    ) {
-                        Icon(
-                            imageVector = if (isBrightness) Icons.Rounded.Brightness6 else Icons.AutoMirrored.Rounded.VolumeUp,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(22.dp),
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Box(
-                            modifier = Modifier
-                                .width(6.dp)
-                                .height(110.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.25f)),
-                            contentAlignment = Alignment.BottomCenter,
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .fillMaxHeight(fraction.coerceIn(0.02f, 1f))
-                                    .clip(CircleShape)
-                                    .background(cs.primary),
-                            )
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text("${(fraction * 100).toInt()}%", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
+            VerticalGestureHud(gestureHud = activeGestureHud)
+            SeekFeedbackPill(feedback = seekFeedback)
         }
 
-        // Badge feedback rapido (-10s / +10s)
-        if (!isInPipMode) {
-            seekFeedback?.let { fb ->
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .clip(CircleShape)
-                        .background(Color(0xCC0B0D14))
-                        .padding(horizontal = 22.dp, vertical = 10.dp),
-                ) {
-                    Text(fb, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-                }
-            }
-        }
+        UndoSkipBanner(
+            visible = session.undoSkipInfo != null && !isScreenLocked && !isInPipMode,
+            undoSkipInfo = session.undoSkipInfo,
+            controlsVisible = controlsVisible,
+            onUndo = { origMs ->
+                exoPlayer.seekTo(origMs)
+                positionMs = origMs
+                playerVm.clearUndoSkip()
+            },
+        )
 
-        // Pillola "Annulla Auto-Skip"
-        AnimatedVisibility(
-            visible = undoSkipInfo != null && !isScreenLocked && !isInPipMode,
-            enter = fadeIn() + slideInVertically { it / 2 },
-            exit = fadeOut() + slideOutVertically { it / 2 },
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 24.dp, bottom = if (controlsVisible) 92.dp else 28.dp),
-        ) {
-            undoSkipInfo?.let { (label, origMs) ->
-                Surface(
-                    shape = CircleShape,
-                    color = Color(0xDD181B28),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-                    ) {
-                        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(
-                            onClick = {
-                                exoPlayer.seekTo(origMs)
-                                positionMs = origMs
-                                undoSkipInfo = null
-                            },
-                        ) {
-                            Text("Annulla", color = cs.primary, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Bottone Fluttuante Stile Netflix "Salta Sigla" / "Salta Outro"
-        val showFloatingSkipButton = activeSkipSegment != null &&
+        val showFloatingSkip = activeSkipSegment != null &&
             !isScreenLocked &&
             !episodeDrawerOpen &&
             !outroCountdownActive &&
             !isInPipMode &&
-            errorMessage == null
+            session.errorMessage == null
 
-        AnimatedVisibility(
-            visible = showFloatingSkipButton,
-            enter = fadeIn() + slideInHorizontally { it / 2 },
-            exit = fadeOut() + slideOutHorizontally { it / 2 },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 24.dp, bottom = if (controlsVisible) 96.dp else 32.dp),
-        ) {
-            activeSkipSegment?.let { seg ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    IconButton(
-                        onClick = { dismissedSkipKinds = dismissedSkipKinds + seg.kind },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xBB151826)),
-                    ) {
-                        Icon(
-                            Icons.Rounded.Close,
-                            contentDescription = "Nascondi",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                    Button(
-                        onClick = { skipSegmentNow(seg, wasAuto = false) },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White,
-                            contentColor = Color(0xFF0E1018),
-                        ),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp),
-                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
-                    ) {
-                        Icon(Icons.Rounded.FastForward, contentDescription = null, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = seg.kind.label,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                        )
-                    }
-                }
-            }
-        }
+        FloatingSkipButton(
+            visible = showFloatingSkip,
+            segment = activeSkipSegment,
+            controlsVisible = controlsVisible,
+            onDismiss = { playerVm.dismissSkipKind(it.kind) },
+            onSkip = { skipSegmentNow(it, wasAuto = false) },
+        )
 
-        // Card Stile Netflix "Prossimo Episodio tra 5s" durante l'Outro
-        AnimatedVisibility(
+        NextEpisodeCountdownCard(
             visible = outroCountdownActive && hasNextEpisode && !isScreenLocked && !episodeDrawerOpen && !isInPipMode,
-            enter = fadeIn() + slideInHorizontally { it / 2 },
-            exit = fadeOut() + slideOutHorizontally { it / 2 },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 24.dp, bottom = if (controlsVisible) 96.dp else 28.dp),
-        ) {
-            val nextEp = request.episodes.getOrNull(currentIndex + 1)
-            if (nextEp != null) {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = Color(0xEB151826),
-                    shadowElevation = 10.dp,
-                ) {
-                    Column(modifier = Modifier.padding(16.dp).width(240.dp)) {
-                        Text(
-                            text = "Prossimo episodio tra ${outroCountdownSeconds}s",
-                            color = Color.White.copy(alpha = 0.78f),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = "Episodio ${nextEp.number}",
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        LinearProgressIndicator(
-                            progress = { (6 - outroCountdownSeconds).coerceIn(1, 5) / 5f },
-                            modifier = Modifier.fillMaxWidth().height(4.dp).clip(CircleShape),
-                            color = cs.primary,
-                            trackColor = Color.White.copy(alpha = 0.2f),
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilledTonalButton(
-                                onClick = {
-                                    outroCountdownCancelled = true
-                                    outroCountdownActive = false
-                                },
-                                shape = CircleShape,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = Color.White.copy(alpha = 0.14f),
-                                    contentColor = Color.White,
-                                ),
-                                modifier = Modifier.weight(1f).height(34.dp),
-                            ) {
-                                Text("Annulla", fontSize = 12.sp)
-                            }
-                            Button(
-                                onClick = { switchEpisode(currentIndex + 1) },
-                                shape = CircleShape,
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                modifier = Modifier.weight(1f).height(34.dp),
-                            ) {
-                                Text("Guarda ora", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+            nextEpisode = request.episodes.getOrNull(session.currentIndex + 1),
+            countdownSeconds = outroCountdownSeconds,
+            controlsVisible = controlsVisible,
+            showSuiteTvAction = settings.suiteTvQuickAction,
+            onOpenSuiteTv = {
+                outroCountdownCancelled = true
+                outroCountdownActive = false
+                persistNow(forceCompleted = true)
+                SuiteTvIntegration.openAnimeInSuiteTv(context, request.anime)
+            },
+            onCancel = {
+                outroCountdownCancelled = true
+                outroCountdownActive = false
+            },
+            onWatchNow = { switchToEpisode(session.currentIndex + 1) },
+        )
 
-        // Pillola "Sblocca schermo"
-        AnimatedVisibility(
+        UnlockScreenPill(
             visible = isScreenLocked && showUnlockPill && !isInPipMode,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 24.dp),
-        ) {
-            Button(
-                onClick = {
-                    isScreenLocked = false
-                    showUnlockPill = false
-                    controlsVisible = true
-                },
-                shape = CircleShape,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xCC151826),
-                    contentColor = Color.White,
-                ),
-            ) {
-                Icon(Icons.Rounded.LockOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Sblocca schermo", fontWeight = FontWeight.Bold)
-            }
-        }
+            onUnlock = {
+                isScreenLocked = false
+                showUnlockPill = false
+                controlsVisible = true
+            },
+        )
 
-        // Schermata Errore
         if (!isInPipMode) {
-            errorMessage?.let { err ->
-                Surface(
-                    shape = RoundedCornerShape(22.dp),
-                    color = Color(0xEE141824),
-                    modifier = Modifier.align(Alignment.Center),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(err, color = Color(0xFFFF6B81), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(14.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            FilledTonalButton(
-                                onClick = {
-                                    persistCurrentProgress()
-                                    onClose()
-                                },
-                                shape = CircleShape,
-                            ) { Text("Chiudi") }
-                            Button(
-                                onClick = {
-                                    pendingSeekMs = positionMs.coerceAtLeast(pendingSeekMs)
-                                    hasAutoRefreshedToken = false
-                                    retryCounter++
-                                },
-                                shape = CircleShape,
-                            ) { Text("Riprova") }
-                        }
-                    }
-                }
-            }
+            PlayerErrorCard(
+                errorMessage = session.errorMessage,
+                onClose = {
+                    persistNow()
+                    onClose()
+                },
+                onRetry = { playerVm.retryFromError(request, positionMs) },
+            )
         }
 
-        // OVERLAY CONTROLLI CINEMA
-        AnimatedVisibility(
-            visible = controlsVisible && !isScreenLocked && !episodeDrawerOpen && !isInPipMode && errorMessage == null,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color(0xBB000000), Color(0x28000000), Color(0xCC000000)),
-                        )
-                    ),
-            ) {
-                // TOP BAR
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(
-                        onClick = {
-                            persistCurrentProgress()
-                            onClose()
-                        },
-                    ) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Indietro", tint = Color.White)
-                    }
-                    Spacer(Modifier.width(6.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = request.anime.title,
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "Episodio ${currentEpisode.number}",
-                                color = Color.White.copy(alpha = 0.78f),
-                                fontSize = 12.sp,
-                            )
-                            BadgePill(
-                                text = qualityBadge,
-                                backgroundColor = if (qualityBadge == "OFFLINE") BadgeGreen else cs.primary,
-                                contentColor = if (qualityBadge == "OFFLINE") Color.White else cs.onPrimary,
-                            )
-                            if (skipSegments.isNotEmpty()) {
-                                BadgePill(
-                                    text = "SMART SKIP",
-                                    backgroundColor = Color.White.copy(alpha = 0.18f),
-                                    contentColor = Color.White,
-                                )
-                            }
-                        }
-                    }
-
-                    // Episodi Drawer
-                    if (request.episodes.size > 1) {
-                        PlayerTopPill(
-                            icon = Icons.AutoMirrored.Rounded.List,
-                            label = "Episodi",
-                            onClick = { episodeDrawerOpen = true },
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-
-                    // Velocità
-                    PlayerTopPill(
-                        icon = Icons.Rounded.Speed,
-                        label = "${speeds[speedIdx]}x",
-                        onClick = {
-                            speedIdx = (speedIdx + 1) % speeds.size
-                            exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
-                        },
-                    )
-                    Spacer(Modifier.width(8.dp))
-
-                    // Aspect Ratio
-                    PlayerTopPill(
-                        icon = Icons.Rounded.AspectRatio,
-                        label = resizeModes[resizeIdx].second,
-                        onClick = { resizeIdx = (resizeIdx + 1) % resizeModes.size },
-                    )
-                    Spacer(Modifier.width(6.dp))
-
-                    // Picture-in-Picture (Android 8+)
-                    IconButton(onClick = onEnterPip) {
-                        Icon(Icons.Rounded.PictureInPictureAlt, contentDescription = "Picture-in-Picture", tint = Color.White)
-                    }
-
-                    // Lucchetto anti-tocchi
-                    IconButton(
-                        onClick = {
-                            isScreenLocked = true
-                            controlsVisible = false
-                            showUnlockPill = true
-                        },
-                    ) {
-                        Icon(Icons.Rounded.Lock, contentDescription = "Blocca schermo", tint = Color.White)
-                    }
+        PlayerControlsOverlay(
+            visible = controlsVisible && !isScreenLocked && !episodeDrawerOpen && !isInPipMode && session.errorMessage == null,
+            animeTitle = request.anime.title,
+            episodeNumber = currentEpisode.number,
+            qualityBadge = session.qualityBadge,
+            hasSmartSkip = session.skipSegments.isNotEmpty(),
+            hasMultipleEpisodes = request.episodes.size > 1,
+            hasPreviousEpisode = session.currentIndex > 0,
+            hasNextEpisode = hasNextEpisode,
+            isPlaying = isPlaying,
+            speedLabel = "${speeds[speedIdx]}x",
+            resizeLabel = resizeModes[resizeIdx].second,
+            positionMs = positionMs,
+            durationMs = durationMs,
+            isSeeking = isSeeking,
+            sliderPosition = sliderPosition,
+            onBack = {
+                persistNow()
+                onClose()
+            },
+            onOpenEpisodeDrawer = { episodeDrawerOpen = true },
+            onCycleSpeed = {
+                speedIdx = (speedIdx + 1) % speeds.size
+                exoPlayer.playbackParameters = PlaybackParameters(speeds[speedIdx])
+            },
+            onCycleResize = { resizeIdx = (resizeIdx + 1) % resizeModes.size },
+            onEnterPip = onEnterPip,
+            onLockScreen = {
+                isScreenLocked = true
+                controlsVisible = false
+                showUnlockPill = true
+            },
+            onPreviousEpisode = { switchToEpisode(session.currentIndex - 1) },
+            onRewind10 = { seekBy(-SEEK_DELTA_MS, "-10s") },
+            onTogglePlay = { if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play() },
+            onForward10 = { seekBy(SEEK_DELTA_MS, "+10s") },
+            onNextEpisode = { switchToEpisode(session.currentIndex + 1) },
+            onFallbackSkip85 = { seekBy(FALLBACK_OP_SKIP_MS, "+85s") },
+            onSliderChange = { value ->
+                isSeeking = true
+                sliderPosition = value
+            },
+            onSliderFinished = {
+                if (durationMs > 1_000L) {
+                    val target = (sliderPosition * durationMs).toLong().coerceIn(0L, durationMs - 1_000L)
+                    exoPlayer.seekTo(target)
+                    positionMs = target
                 }
+                isSeeking = false
+            },
+        )
 
-                // CENTER CONTROLS
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = { switchEpisode(currentIndex - 1) }, enabled = currentIndex > 0) {
-                        Icon(
-                            Icons.Rounded.SkipPrevious,
-                            contentDescription = "Precedente",
-                            tint = if (currentIndex > 0) Color.White else Color.White.copy(alpha = 0.3f),
-                            modifier = Modifier.size(34.dp),
-                        )
-                    }
-                    IconButton(onClick = { seekBy(-10_000L, "-10s") }) {
-                        Icon(Icons.Rounded.Replay10, contentDescription = "-10s", tint = Color.White, modifier = Modifier.size(38.dp))
-                    }
-                    IconButton(
-                        onClick = { if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play() },
-                        modifier = Modifier
-                            .size(66.dp)
-                            .clip(CircleShape)
-                            .background(cs.primary.copy(alpha = 0.92f)),
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = if (isPlaying) "Pausa" else "Play",
-                            tint = cs.onPrimary,
-                            modifier = Modifier.size(40.dp),
-                        )
-                    }
-                    IconButton(onClick = { seekBy(10_000L, "+10s") }) {
-                        Icon(Icons.Rounded.Forward10, contentDescription = "+10s", tint = Color.White, modifier = Modifier.size(38.dp))
-                    }
-                    IconButton(onClick = { switchEpisode(currentIndex + 1) }, enabled = hasNextEpisode) {
-                        Icon(
-                            Icons.Rounded.SkipNext,
-                            contentDescription = "Successivo",
-                            tint = if (hasNextEpisode) Color.White else Color.White.copy(alpha = 0.3f),
-                            modifier = Modifier.size(34.dp),
-                        )
-                    }
-                }
-
-                // BOTTOM BAR
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "${formatTimeMs(if (isSeeking) (sliderPosition * durationMs).toLong() else positionMs)} / ${formatTimeMs(durationMs)}",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-
-                        // Fallback +85s mostrato SOLO se non esistono timestamp reali per l'episodio
-                        if (skipSegments.isEmpty()) {
-                            PlayerTopPill(
-                                icon = Icons.Rounded.FastForward,
-                                label = "+85s",
-                                onClick = { seekBy(85_000L, "+85s") },
-                            )
-                        }
-                    }
-
-                    Slider(
-                        value = sliderPosition,
-                        onValueChange = { value ->
-                            isSeeking = true
-                            sliderPosition = value
-                        },
-                        onValueChangeFinished = {
-                            if (durationMs > 1_000L) {
-                                val target = (sliderPosition * durationMs).toLong().coerceIn(0L, durationMs - 1_000L)
-                                exoPlayer.seekTo(target)
-                                positionMs = target
-                            }
-                            isSeeking = false
-                        },
-                        colors = SliderDefaults.colors(
-                            thumbColor = cs.primary,
-                            activeTrackColor = cs.primary,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.3f),
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
-        }
-
-        // DRAWER EPISODI IN-PLAYER (slide da destra)
-        AnimatedVisibility(
+        PlayerEpisodeDrawer(
             visible = episodeDrawerOpen && !isInPipMode,
-            enter = slideInHorizontally { it },
-            exit = slideOutHorizontally { it },
-            modifier = Modifier.align(Alignment.CenterEnd),
-        ) {
-            val histEntry = historyRepo.getEntry(request.anime.uniqueKey)
-            Surface(
-                color = Color(0xF0121420),
-                shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp),
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(280.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "Episodi (${request.episodes.size})",
-                            color = Color.White,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = { episodeDrawerOpen = false }) {
-                            Icon(Icons.Rounded.Close, contentDescription = "Chiudi", tint = Color.White)
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        itemsIndexed(request.episodes) { idx, ep ->
-                            val isCurrent = idx == currentIndex
-                            val completed = histEntry?.episodesProgress?.get(ep.number)?.completed == true
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(if (isCurrent) cs.primaryContainer else Color.White.copy(alpha = 0.06f))
-                                    .clickable { switchEpisode(idx) }
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                            ) {
-                                Text(
-                                    text = "Episodio ${ep.number}",
-                                    color = if (isCurrent) cs.onPrimaryContainer else Color.White,
-                                    fontSize = 14.sp,
-                                    fontWeight = if (isCurrent) FontWeight.ExtraBold else FontWeight.Medium,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                if (completed) {
-                                    Icon(
-                                        Icons.Rounded.CheckCircle,
-                                        contentDescription = "Visto",
-                                        tint = BadgeGreen,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+            episodes = request.episodes,
+            currentIndex = session.currentIndex,
+            historyEntry = playerVm.getHistoryEntry(request.anime.uniqueKey),
+            onClose = { episodeDrawerOpen = false },
+            onSelectEpisode = { idx -> switchToEpisode(idx) },
+        )
     }
 }
 
 @Composable
-private fun PlayerTopPill(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    onClick: () -> Unit,
+private fun BindImmersivePlayerWindow(
+    activity: Activity?,
+    isInPipMode: Boolean,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(Color(0x77000000))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-    ) {
-        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(5.dp))
-        Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    DisposableEffect(activity) {
+        val prevOrientation = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        val prevBrightness = activity?.window?.attributes?.screenBrightness
+            ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val insetsController = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+        insetsController?.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            activity?.window?.let { win ->
+                val attrs = win.attributes
+                attrs.screenBrightness = prevBrightness
+                win.attributes = attrs
+            }
+            insetsController?.show(WindowInsetsCompat.Type.systemBars())
+            activity?.requestedOrientation = prevOrientation
+        }
+    }
+
+    LaunchedEffect(isInPipMode, activity) {
+        if (!isInPipMode) {
+            val insetsController = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+            insetsController?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+        }
     }
 }

@@ -1,28 +1,32 @@
 package com.carloj005.awanime.data.storage
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.Environment
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.DownloadEntry
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.network.AnimeUnityClient
+import com.carloj005.awanime.data.network.NetworkMonitor
+import com.carloj005.awanime.data.network.UrlSecurityPolicy
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
+import okhttp3.Call
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
@@ -31,38 +35,59 @@ import java.util.concurrent.ConcurrentHashMap
 class DownloadRepository(
     private val context: Context,
     private val client: AnimeUnityClient,
+    private val downloadHttpClient: OkHttpClient,
     private val settingsRepo: SettingsRepository,
+    private val networkMonitor: NetworkMonitor,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val metaFile = File(context.filesDir, "downloads.json")
+    companion object {
+        private const val BUFFER_BYTES = 128 * 1024
+        private const val PROGRESS_EMIT_INTERVAL_MS = 250L
+        private const val MAX_CONCURRENT_DOWNLOADS = 2
+
+        fun uniqueWorkName(key: String): String = "aw_download_$key"
+    }
+
     private val downloadsRoot: File = File(
         context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir,
         "AwAnime",
-    ).apply { mkdirs() }
+    )
 
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
-    private val lock = Any()
-    private val semaphore = Semaphore(2)
-    private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val semaphore = Semaphore(MAX_CONCURRENT_DOWNLOADS)
+    private val activeCalls = ConcurrentHashMap<String, Call>()
+    private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
 
-    private val _downloads = MutableStateFlow<List<DownloadEntry>>(emptyList())
-    val downloads: StateFlow<List<DownloadEntry>> = _downloads.asStateFlow()
-
-    init {
-        val loaded = readFromDisk().map { entry ->
-            when {
-                entry.status == DownloadStatus.COMPLETED && !File(entry.filePath).exists() -> {
-                    entry.copy(status = DownloadStatus.FAILED, errorMessage = "File locale rimosso")
+    private val store = JsonFileStore(
+        file = File(context.filesDir, "downloads.json"),
+        serializer = ListSerializer(DownloadEntry.serializer()),
+        defaultValue = emptyList(),
+        ioDispatcher = ioDispatcher,
+        normalizeLoaded = { list ->
+            var changed = false
+            val normalized = list.sortedByDescending { it.updatedAt }.map { entry ->
+                when {
+                    entry.status == DownloadStatus.COMPLETED && !File(entry.filePath).exists() -> {
+                        changed = true
+                        entry.copy(status = DownloadStatus.FAILED, errorMessage = "File locale rimosso")
+                    }
+                    entry.status == DownloadStatus.DOWNLOADING || entry.status == DownloadStatus.QUEUED -> {
+                        changed = true
+                        val partialBytes = File("${entry.filePath}.temp").takeIf { it.exists() }?.length()
+                            ?: entry.bytesDownloaded
+                        entry.copy(
+                            status = DownloadStatus.FAILED,
+                            bytesDownloaded = partialBytes,
+                            errorMessage = "Download interrotto (tocca Riprova per riprendere)",
+                        )
+                    }
+                    else -> entry
                 }
-                entry.status == DownloadStatus.DOWNLOADING || entry.status == DownloadStatus.QUEUED -> {
-                    entry.copy(status = DownloadStatus.FAILED, errorMessage = "Download interrotto")
-                }
-                else -> entry
             }
-        }
-        _downloads.value = loaded
-        writeToDisk(loaded)
-    }
+            normalized to changed
+        },
+    )
+
+    val downloads: StateFlow<List<DownloadEntry>> = store.state
 
     fun makeKey(animeId: String, isDub: Boolean, episodeNum: String): String {
         return "${animeId}_${if (isDub) "ita" else "sub"}_$episodeNum"
@@ -70,38 +95,35 @@ class DownloadRepository(
 
     fun getLocalFileIfReady(animeId: String, isDub: Boolean, episodeNum: String): File? {
         val key = makeKey(animeId, isDub, episodeNum)
-        val entry = _downloads.value.firstOrNull { it.key == key } ?: return null
+        val entry = store.value.firstOrNull { it.key == key } ?: return null
         if (entry.status != DownloadStatus.COMPLETED) return null
-        val f = File(entry.filePath)
-        return if (isInsideDownloadsRoot(f) && f.exists() && f.length() > 0L) f else null
+        val file = File(entry.filePath)
+        return if (isInsideDownloadsRoot(file) && file.exists() && file.length() > 0L) file else null
     }
 
-    fun getEntry(animeId: String, isDub: Boolean, episodeNum: String): DownloadEntry? {
-        val key = makeKey(animeId, isDub, episodeNum)
-        return _downloads.value.firstOrNull { it.key == key }
-    }
-
-    fun isUnmeteredWifiConnected(): Boolean {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
-        val net = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(net) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    fun getEntryByKey(key: String): DownloadEntry? {
+        return store.value.firstOrNull { it.key == key }
     }
 
     fun enqueueDownload(anime: AnimeItem, episode: EpisodeItem) {
         val key = makeKey(anime.id, anime.isDub, episode.number)
-        if (activeJobs[key]?.isActive == true) return
-
-        val existingFile = getLocalFileIfReady(anime.id, anime.isDub, episode.number)
-        if (existingFile != null) return
-
-        val safeDir = File(downloadsRoot, sanitizePathSegment(anime.title)).apply { mkdirs() }
-        val targetFile = File(safeDir, "${sanitizePathSegment(anime.title)} Ep. ${sanitizePathSegment(episode.number)}.mp4")
-        if (!isInsideDownloadsRoot(targetFile)) {
+        val existing = getEntryByKey(key)
+        if (existing?.status == DownloadStatus.DOWNLOADING || existing?.status == DownloadStatus.QUEUED) {
             return
         }
+        if (getLocalFileIfReady(anime.id, anime.isDub, episode.number) != null) {
+            return
+        }
+
+        val safeDir = File(downloadsRoot, sanitizePathSegment(anime.title))
+        val targetFile = File(
+            safeDir,
+            "${sanitizePathSegment(anime.title)} Ep. ${sanitizePathSegment(episode.number)}.mp4",
+        )
+        if (!isInsideDownloadsRoot(targetFile)) return
+
+        val existingTempBytes = File("${targetFile.absolutePath}.temp").takeIf { it.exists() }?.length() ?: 0L
+        val wifiOnly = settingsRepo.settings.value.wifiOnlyDownloads
 
         val initial = DownloadEntry(
             key = key,
@@ -112,111 +134,24 @@ class DownloadRepository(
             episodeNum = episode.number,
             videoId = episode.videoId,
             filePath = targetFile.absolutePath,
+            bytesDownloaded = existingTempBytes,
+            totalBytes = existing?.totalBytes ?: 0L,
             status = DownloadStatus.QUEUED,
             updatedAt = System.currentTimeMillis(),
         )
 
-        if (settingsRepo.settings.value.wifiOnlyDownloads && !isUnmeteredWifiConnected()) {
+        if (wifiOnly && !networkMonitor.isUnmeteredWifiConnected()) {
             upsert(
                 initial.copy(
                     status = DownloadStatus.FAILED,
                     errorMessage = "Bloccato: opzione 'Download solo su Wi-Fi' attiva nelle Impostazioni.",
-                ),
-                persist = true,
+                )
             )
             return
         }
 
         upsert(initial)
-
-        val job = scope.launch {
-            val tempFile = File(targetFile.parentFile, "${targetFile.name}.temp")
-            try {
-                semaphore.withPermit {
-                    if (settingsRepo.settings.value.wifiOnlyDownloads && !isUnmeteredWifiConnected()) {
-                        throw IllegalStateException("Connessione Wi-Fi richiesta (opzione attiva nelle Impostazioni)")
-                    }
-                    upsert(initial.copy(status = DownloadStatus.DOWNLOADING, errorMessage = null))
-                    val directUrl = client.resolveDirectDownloadUrl(anime.id, episode.videoId)
-                    if (!directUrl.startsWith("https://")) {
-                        throw SecurityException("URL download non HTTPS bloccato per sicurezza")
-                    }
-
-                    val req = Request.Builder()
-                        .url(directUrl)
-                        .header("User-Agent", AnimeUnityClient.USER_AGENT)
-                        .header("Referer", "https://vixcloud.cc/")
-                        .build()
-
-                    client.downloadOkHttpClient.newCall(req).execute().use { resp ->
-                        if (!resp.isSuccessful) {
-                            throw IllegalStateException("Errore server download HTTP ${resp.code}")
-                        }
-                        val body = resp.body ?: throw IllegalStateException("Risposta download vuota")
-                        val totalBytes = body.contentLength().coerceAtLeast(0L)
-                        var downloaded = 0L
-                        var lastUiUpdate = 0L
-
-                        body.byteStream().use { input ->
-                            FileOutputStream(tempFile).use { output ->
-                                val buffer = ByteArray(128 * 1024)
-                                while (isActive) {
-                                    val read = input.read(buffer)
-                                    if (read == -1) break
-                                    output.write(buffer, 0, read)
-                                    downloaded += read
-                                    val now = System.currentTimeMillis()
-                                    if (now - lastUiUpdate >= 250L) {
-                                        lastUiUpdate = now
-                                        upsert(
-                                            initial.copy(
-                                                status = DownloadStatus.DOWNLOADING,
-                                                bytesDownloaded = downloaded,
-                                                totalBytes = totalBytes,
-                                                updatedAt = now,
-                                            ),
-                                            persist = false,
-                                        )
-                                    }
-                                }
-                                output.flush()
-                            }
-                        }
-                        if (!isActive) throw CancellationException("Download annullato")
-                        if (targetFile.exists()) targetFile.delete()
-                        if (!tempFile.renameTo(targetFile)) {
-                            tempFile.copyTo(targetFile, overwrite = true)
-                            tempFile.delete()
-                        }
-                        upsert(
-                            initial.copy(
-                                status = DownloadStatus.COMPLETED,
-                                bytesDownloaded = targetFile.length(),
-                                totalBytes = targetFile.length(),
-                                updatedAt = System.currentTimeMillis(),
-                            ),
-                            persist = true,
-                        )
-                    }
-                }
-            } catch (_: CancellationException) {
-                tempFile.delete()
-                removeEntryOnly(key)
-            } catch (e: Exception) {
-                tempFile.delete()
-                upsert(
-                    initial.copy(
-                        status = DownloadStatus.FAILED,
-                        errorMessage = e.message ?: "Errore durante il download",
-                        updatedAt = System.currentTimeMillis(),
-                    ),
-                    persist = true,
-                )
-            } finally {
-                activeJobs.remove(key)
-            }
-        }
-        activeJobs[key] = job
+        scheduleWorker(key = key, wifiOnly = wifiOnly)
     }
 
     fun retryDownload(entry: DownloadEntry) {
@@ -236,81 +171,229 @@ class DownloadRepository(
     }
 
     fun cancelDownload(key: String) {
-        activeJobs.remove(key)?.cancel()
-        val entry = _downloads.value.firstOrNull { it.key == key }
-        if (entry != null) {
-            val tmp = File("${entry.filePath}.temp")
-            if (isInsideDownloadsRoot(tmp)) tmp.delete()
-        }
+        activeCalls.remove(key)?.cancel()
+        workManager.cancelUniqueWork(uniqueWorkName(key))
+        val entry = getEntryByKey(key)
         removeEntryOnly(key)
+        if (entry != null) {
+            deleteTempFileSafely(entry.filePath)
+        }
     }
 
     fun deleteDownload(key: String) {
-        activeJobs.remove(key)?.cancel()
-        val entry = _downloads.value.firstOrNull { it.key == key }
+        activeCalls.remove(key)?.cancel()
+        workManager.cancelUniqueWork(uniqueWorkName(key))
+        val entry = getEntryByKey(key)
+        removeEntryOnly(key)
         if (entry != null) {
-            val f = File(entry.filePath)
-            val tmp = File("${entry.filePath}.temp")
-            if (isInsideDownloadsRoot(f)) {
-                f.delete()
-                val parent = f.parentFile
-                if (parent != null && isInsideDownloadsRoot(parent) && parent.isDirectory && parent.listFiles().isNullOrEmpty()) {
-                    parent.delete()
+            deleteFilesSafely(entry.filePath)
+        }
+    }
+
+    internal suspend fun executeScheduledDownload(
+        key: String,
+        onProgressUpdate: suspend (DownloadEntry) -> Unit = {},
+    ): Boolean = withContext(Dispatchers.IO) {
+        val initial = store.awaitLoaded().firstOrNull { it.key == key } ?: return@withContext true
+        if (initial.status == DownloadStatus.COMPLETED) return@withContext true
+
+        val targetFile = File(initial.filePath)
+        if (!isInsideDownloadsRoot(targetFile)) {
+            removeEntryOnly(key)
+            return@withContext false
+        }
+        targetFile.parentFile?.mkdirs()
+        val tempFile = File(targetFile.parentFile, "${targetFile.name}.temp")
+
+        try {
+            semaphore.withPermit {
+                if (settingsRepo.settings.value.wifiOnlyDownloads && !networkMonitor.isUnmeteredWifiConnected()) {
+                    throw IllegalStateException("Connessione Wi-Fi richiesta (opzione attiva nelle Impostazioni)")
+                }
+
+                val resumeBytes = if (tempFile.exists()) tempFile.length().coerceAtLeast(0L) else 0L
+                val activeStart = initial.copy(
+                    status = DownloadStatus.DOWNLOADING,
+                    bytesDownloaded = resumeBytes,
+                    errorMessage = null,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                upsert(activeStart)
+                onProgressUpdate(activeStart)
+
+                val source = client.resolveDirectDownload(initial.animeId, initial.videoId)
+                if (!UrlSecurityPolicy.isTrustedMediaUrl(source.url)) {
+                    throw SecurityException("URL download non HTTPS o non sicuro bloccato")
+                }
+
+                val reqBuilder = Request.Builder()
+                    .url(source.url)
+                    .header("User-Agent", AnimeUnityClient.USER_AGENT)
+                    .header("Referer", source.referer)
+                if (resumeBytes > 0L) {
+                    reqBuilder.header("Range", "bytes=$resumeBytes-")
+                }
+
+                val call = downloadHttpClient.newCall(reqBuilder.build())
+                activeCalls[key] = call
+                try {
+                    call.execute().use { resp ->
+                        if (resp.code == 416 && resumeBytes > 0L) {
+                            finalizeCompletedFile(tempFile, targetFile, initial)
+                            return@withPermit
+                        }
+                        if (!resp.isSuccessful) {
+                            throw IllegalStateException("Errore server download HTTP ${resp.code}")
+                        }
+                        val body = resp.body ?: throw IllegalStateException("Risposta download vuota")
+                        val isPartial = resp.code == 206 && resumeBytes > 0L
+                        val startOffset = if (isPartial) resumeBytes else 0L
+                        val contentLength = body.contentLength().coerceAtLeast(0L)
+                        val totalBytes = if (contentLength > 0L) startOffset + contentLength else 0L
+
+                        var downloaded = startOffset
+                        var lastEmit = 0L
+
+                        body.byteStream().use { input ->
+                            FileOutputStream(tempFile, isPartial).use { output ->
+                                val buffer = ByteArray(BUFFER_BYTES)
+                                while (currentCoroutineContext().isActive) {
+                                    val read = input.read(buffer)
+                                    if (read == -1) break
+                                    output.write(buffer, 0, read)
+                                    downloaded += read
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastEmit >= PROGRESS_EMIT_INTERVAL_MS) {
+                                        lastEmit = now
+                                        val progressEntry = initial.copy(
+                                            status = DownloadStatus.DOWNLOADING,
+                                            bytesDownloaded = downloaded,
+                                            totalBytes = totalBytes,
+                                            updatedAt = now,
+                                        )
+                                        upsert(progressEntry)
+                                        onProgressUpdate(progressEntry)
+                                    }
+                                }
+                                output.flush()
+                            }
+                        }
+
+                        if (!currentCoroutineContext().isActive) {
+                            throw CancellationException("Download annullato")
+                        }
+                        finalizeCompletedFile(tempFile, targetFile, initial)
+                    }
+                } finally {
+                    activeCalls.remove(key, call)
                 }
             }
-            if (isInsideDownloadsRoot(tmp)) tmp.delete()
+            true
+        } catch (ce: CancellationException) {
+            // If user cancelled/deleted, the entry was already removed; clean up temp file.
+            if (getEntryByKey(key) == null) {
+                tempFile.delete()
+            } else {
+                val savedBytes = tempFile.takeIf { it.exists() }?.length() ?: 0L
+                upsert(
+                    initial.copy(
+                        status = DownloadStatus.FAILED,
+                        bytesDownloaded = savedBytes,
+                        errorMessage = "Download messo in pausa/interrotto",
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                )
+            }
+            throw ce
+        } catch (e: Exception) {
+            val savedBytes = tempFile.takeIf { it.exists() }?.length() ?: 0L
+            upsert(
+                initial.copy(
+                    status = DownloadStatus.FAILED,
+                    bytesDownloaded = savedBytes,
+                    errorMessage = e.message ?: "Errore durante il download",
+                    updatedAt = System.currentTimeMillis(),
+                )
+            )
+            false
         }
-        removeEntryOnly(key)
+    }
+
+    private fun finalizeCompletedFile(tempFile: File, targetFile: File, initial: DownloadEntry) {
+        if (targetFile.exists()) targetFile.delete()
+        if (!tempFile.renameTo(targetFile)) {
+            tempFile.copyTo(targetFile, overwrite = true)
+            tempFile.delete()
+        }
+        val finalSize = targetFile.length()
+        upsert(
+            initial.copy(
+                status = DownloadStatus.COMPLETED,
+                bytesDownloaded = finalSize,
+                totalBytes = finalSize,
+                errorMessage = null,
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    private fun scheduleWorker(key: String, wifiOnly: Boolean) {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+            .build()
+        val request = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setConstraints(constraints)
+            .setInputData(workDataOf(DownloadWorker.KEY_DOWNLOAD_ID to key))
+            .build()
+        workManager.enqueueUniqueWork(
+            uniqueWorkName(key),
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
+    }
+
+    private fun deleteTempFileSafely(filePath: String) {
+        val tmp = File("$filePath.temp")
+        if (isInsideDownloadsRoot(tmp)) tmp.delete()
+    }
+
+    private fun deleteFilesSafely(filePath: String) {
+        val file = File(filePath)
+        val tmp = File("$filePath.temp")
+        if (isInsideDownloadsRoot(file)) {
+            file.delete()
+            val parent = file.parentFile
+            if (parent != null && isInsideDownloadsRoot(parent) && parent.isDirectory && parent.listFiles().isNullOrEmpty()) {
+                parent.delete()
+            }
+        }
+        if (isInsideDownloadsRoot(tmp)) tmp.delete()
     }
 
     private fun isInsideDownloadsRoot(file: File): Boolean {
         return runCatching {
+            downloadsRoot.mkdirs()
             val rootCanon = downloadsRoot.canonicalPath
             val targetCanon = file.canonicalPath
             targetCanon == rootCanon || targetCanon.startsWith("$rootCanon${File.separator}")
         }.getOrDefault(false)
     }
 
-    private fun upsert(entry: DownloadEntry, persist: Boolean = true) {
-        val next = synchronized(lock) {
-            val list = _downloads.value.toMutableList()
+    private fun upsert(entry: DownloadEntry) {
+        store.update { current ->
+            val list = current.toMutableList()
             val idx = list.indexOfFirst { it.key == entry.key }
             if (idx >= 0) {
                 list[idx] = entry
             } else {
                 list.add(0, entry)
             }
-            if (persist) writeToDisk(list)
-            list.toList()
+            list
         }
-        _downloads.value = next
     }
 
     private fun removeEntryOnly(key: String) {
-        val next = synchronized(lock) {
-            val list = _downloads.value.filterNot { it.key == key }
-            writeToDisk(list)
-            list
-        }
-        _downloads.value = next
-    }
-
-    private fun readFromDisk(): List<DownloadEntry> = synchronized(lock) {
-        if (!metaFile.exists()) return emptyList()
-        return runCatching {
-            json.decodeFromString<List<DownloadEntry>>(metaFile.readText(Charsets.UTF_8))
-                .sortedByDescending { it.updatedAt }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun writeToDisk(list: List<DownloadEntry>) = synchronized(lock) {
-        val payload = json.encodeToString(list)
-        val tmp = File(metaFile.parentFile, "${metaFile.name}.tmp")
-        tmp.writeText(payload, Charsets.UTF_8)
-        if (!tmp.renameTo(metaFile)) {
-            metaFile.writeText(payload, Charsets.UTF_8)
-            tmp.delete()
-        }
+        store.update { current -> current.filterNot { it.key == key } }
     }
 
     private fun sanitizePathSegment(raw: String): String {
