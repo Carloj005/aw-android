@@ -70,8 +70,11 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.carloj005.awanime.data.integrations.AnimeUnityDeepLink
+import com.carloj005.awanime.data.integrations.AnimeUnityDeepLinkParser
 import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.DownloadStatus
+import com.carloj005.awanime.data.model.LatestFilter
 import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.formatBytes
 import com.carloj005.awanime.ui.AppViewModel
@@ -101,11 +104,15 @@ private enum class BottomTab(val label: String, val icon: ImageVector) {
     DOWNLOADS("Download", Icons.Rounded.Download),
 }
 
-private data class NotificationAnimeTarget(
-    val animeId: String,
-    val title: String,
-    val isDub: Boolean,
-)
+private sealed interface IncomingNavigationRequest {
+    data class NotificationAnime(
+        val animeId: String,
+        val title: String,
+        val isDub: Boolean,
+    ) : IncomingNavigationRequest
+
+    data class WebDeepLink(val link: AnimeUnityDeepLink) : IncomingNavigationRequest
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -123,8 +130,8 @@ class MainActivity : ComponentActivity() {
     private val _pipCommands = MutableSharedFlow<PipCommand>(extraBufferCapacity = 8)
     val pipCommands: SharedFlow<PipCommand> = _pipCommands.asSharedFlow()
 
-    private val _pendingNotificationTarget = MutableStateFlow<NotificationAnimeTarget?>(null)
-    private val pendingNotificationTarget: StateFlow<NotificationAnimeTarget?> = _pendingNotificationTarget.asStateFlow()
+    private val _pendingNavRequest = MutableStateFlow<IncomingNavigationRequest?>(null)
+    private val pendingNavRequest: StateFlow<IncomingNavigationRequest?> = _pendingNavRequest.asStateFlow()
 
     @Volatile
     private var shouldAutoEnterPip: Boolean = false
@@ -223,21 +230,34 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleNotificationIntent(intent)
+        handleIncomingIntent(intent)
     }
 
-    private fun handleNotificationIntent(intent: Intent?) {
-        val animeId = intent?.getStringExtra(EXTRA_OPEN_ANIME_ID)?.takeIf { it.isNotBlank() } ?: return
-        val title = intent.getStringExtra(EXTRA_OPEN_ANIME_TITLE).orEmpty().ifBlank { "Anime" }
-        val isDub = intent.getBooleanExtra(EXTRA_OPEN_ANIME_IS_DUB, false)
-        _pendingNotificationTarget.value = NotificationAnimeTarget(animeId, title, isDub)
-        intent.removeExtra(EXTRA_OPEN_ANIME_ID)
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        val notifAnimeId = intent.getStringExtra(EXTRA_OPEN_ANIME_ID)?.takeIf { it.isNotBlank() }
+        if (notifAnimeId != null) {
+            val title = intent.getStringExtra(EXTRA_OPEN_ANIME_TITLE).orEmpty().ifBlank { "Anime" }
+            val isDub = intent.getBooleanExtra(EXTRA_OPEN_ANIME_IS_DUB, false)
+            _pendingNavRequest.value = IncomingNavigationRequest.NotificationAnime(notifAnimeId, title, isDub)
+            intent.removeExtra(EXTRA_OPEN_ANIME_ID)
+            return
+        }
+
+        if (intent.action == Intent.ACTION_VIEW) {
+            val rawUri = intent.dataString
+            val parsed = AnimeUnityDeepLinkParser.parse(rawUri)
+            if (parsed != null) {
+                _pendingNavRequest.value = IncomingNavigationRequest.WebDeepLink(parsed)
+                intent.data = null
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleNotificationIntent(intent)
+        handleIncomingIntent(intent)
 
         val filter = IntentFilter().apply {
             addAction(ACTION_PIP_TOGGLE_PLAY)
@@ -250,15 +270,9 @@ class MainActivity : ComponentActivity() {
             val vm: AppViewModel = viewModel(factory = AppViewModel.Factory)
             val settings by vm.settings.collectAsStateWithLifecycle()
             val activePlayer by vm.activePlayer.collectAsStateWithLifecycle()
-            val pendingTarget by pendingNotificationTarget.collectAsStateWithLifecycle()
+            val pendingNav by pendingNavRequest.collectAsStateWithLifecycle()
             val isInPip by isInPipState
             var isPlayerPlaying by rememberSaveable { mutableStateOf(true) }
-
-            LaunchedEffect(pendingTarget) {
-                val target = pendingTarget ?: return@LaunchedEffect
-                vm.openAnimeById(target.animeId, target.title, target.isDub)
-                _pendingNotificationTarget.value = null
-            }
 
             LaunchedEffect(activePlayer, settings.autoPipEnabled, isPlayerPlaying) {
                 val canAuto = activePlayer != null && settings.autoPipEnabled && isPlayerPlaying
@@ -292,6 +306,8 @@ class MainActivity : ComponentActivity() {
             ) {
                 AwAnimeRoot(
                     vm = vm,
+                    pendingNav = pendingNav,
+                    onConsumePendingNav = { _pendingNavRequest.value = null },
                     isInPipMode = isInPip,
                     pipCommands = pipCommands,
                     onPlayingStateChanged = { playing ->
@@ -314,6 +330,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AwAnimeRoot(
     vm: AppViewModel,
+    pendingNav: IncomingNavigationRequest?,
+    onConsumePendingNav: () -> Unit,
     isInPipMode: Boolean,
     pipCommands: SharedFlow<PipCommand>,
     onPlayingStateChanged: (Boolean) -> Unit,
@@ -323,6 +341,55 @@ private fun AwAnimeRoot(
     var selectedTab by rememberSaveable { mutableStateOf(BottomTab.HOME) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     val homeGridState = rememberLazyGridState()
+
+    LaunchedEffect(pendingNav) {
+        val nav = pendingNav ?: return@LaunchedEffect
+        when (nav) {
+            is IncomingNavigationRequest.NotificationAnime -> {
+                showSettings = false
+                vm.closePlayer()
+                vm.openAnimeById(nav.animeId, nav.title, nav.isDub)
+            }
+            is IncomingNavigationRequest.WebDeepLink -> {
+                showSettings = false
+                when (val link = nav.link) {
+                    is AnimeUnityDeepLink.AnimeDetail -> {
+                        vm.closePlayer()
+                        vm.openAnimeById(link.animeId, title = "", isDub = link.isDubHint, slug = link.slug)
+                    }
+                    is AnimeUnityDeepLink.EpisodePlayback -> {
+                        vm.closePlayer()
+                        vm.openEpisodeFromDeepLink(
+                            animeId = link.animeId,
+                            slug = link.slug,
+                            videoId = link.videoId,
+                            isDubHint = link.isDubHint,
+                        )
+                    }
+                    AnimeUnityDeepLink.Calendar -> {
+                        vm.closePlayer()
+                        vm.closeDetail()
+                        selectedTab = BottomTab.CALENDAR
+                    }
+                    is AnimeUnityDeepLink.Search -> {
+                        vm.closePlayer()
+                        vm.closeDetail()
+                        selectedTab = BottomTab.SEARCH
+                        vm.performSearch(link.query)
+                    }
+                    is AnimeUnityDeepLink.Home -> {
+                        vm.closePlayer()
+                        vm.closeDetail()
+                        selectedTab = BottomTab.HOME
+                        if (link.trending) {
+                            vm.loadHome(LatestFilter.TRENDING)
+                        }
+                    }
+                }
+            }
+        }
+        onConsumePendingNav()
+    }
 
     val homeState by vm.homeState.collectAsStateWithLifecycle()
     val calendarState by vm.calendarState.collectAsStateWithLifecycle()
@@ -419,6 +486,7 @@ private fun AwAnimeRoot(
                         exportSuiteTvLauncher.launch("aw-anime-suitetv-trakt.json")
                     },
                     onOpenSuiteTv = { SuiteTvIntegration.openSuiteTvAppOrWeb(context) },
+                    onOpenSupportedLinksSettings = { AnimeUnityDeepLinkParser.openSupportedLinksSettings(context) },
                     onRequestNotificationPermissionAndEnable = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)

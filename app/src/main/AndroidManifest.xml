@@ -29,12 +29,46 @@
 
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:supportsPictureInPicture="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Supported AnimeUnity web links (anime detail, direct episode, calendar, search) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:scheme="http" />
+                <data android:host="animeunity.cx" />
+                <data android:host="www.animeunity.cx" />
+                <data android:host="animeunity.so" />
+                <data android:host="www.animeunity.so" />
+                <data android:host="animeunity.to" />
+                <data android:host="www.animeunity.to" />
+                <data android:host="animeunity.co" />
+                <data android:host="www.animeunity.co" />
+                <data android:host="animeunity.tv" />
+                <data android:host="www.animeunity.tv" />
+                <data android:host="animeunity.it" />
+                <data android:host="www.animeunity.it" />
+                <data android:host="animeunity.cc" />
+                <data android:host="www.animeunity.cc" />
+                <data android:host="animeunity.io" />
+                <data android:host="www.animeunity.io" />
+                <data android:host="animeunity.me" />
+                <data android:host="www.animeunity.me" />
+                <data android:host="animeunity.ac" />
+                <data android:host="www.animeunity.ac" />
+                <data android:host="animeunity.org" />
+                <data android:host="www.animeunity.org" />
+                <data android:host="animeunity.net" />
+                <data android:host="www.animeunity.net" />
             </intent-filter>
         </activity>
 

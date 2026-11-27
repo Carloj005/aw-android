@@ -4,6 +4,10 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.3.2 — Link Supportati AnimeUnity & Fix "Continua a guardare"
+- **Apertura diretta link AnimeUnity (Issue #3)**: toccando un link `animeunity.*` ricevuto o dal browser (scheda `/anime/<id>-<slug>`, episodio diretto `/anime/<id>-<slug>/<videoId>`, `/calendario`, `/archivio?title=...`, `/top-anime`), AW Anime si apre direttamente sul contenuto corrispondente (con riconoscimento automatico SUB/ITA sugli episodi condivisi e tasto **"Attiva"** in *Impostazioni → Link supportati AnimeUnity* per Android 12+).
+- **Fix "Continua a guardare" su stagioni finite (Issue #4)**: quando completi l'ultimo episodio di una stagione (o l'ultimo episodio uscito di un anime in corso), il titolo scompare automaticamente dal carosello *"Continua a guardare"* in Home restando comunque salvato in *Libreria → Cronologia* (e ricompare da solo se esce un nuovo episodio).
+
 ## Novità v1.3.1 — Hotfix R8 Full Mode (WorkManager / Room / Coil)
 - **Fix crash all'avvio su Android (`v1.3.0`)**: R8 Full Mode di AGP 9 rimuoveva il costruttore riflessivo di `WorkDatabase_Impl` (Room/WorkManager), `WorkerParameters` e l'interfaccia `coil.ImageLoaderFactory` su `AwAnimeApp`. Aggiunte regole ProGuard mirate per Room/WorkManager/Startup/SavedState/Coil e inizializzazione `by lazy` crash-safe su `AwAnimeApp.container`.
 

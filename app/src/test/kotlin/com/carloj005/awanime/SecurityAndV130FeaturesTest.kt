@@ -1,5 +1,7 @@
 package com.carloj005.awanime
 
+import com.carloj005.awanime.data.integrations.AnimeUnityDeepLink
+import com.carloj005.awanime.data.integrations.AnimeUnityDeepLinkParser
 import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.EpisodeProgress
@@ -353,5 +355,96 @@ class SecurityAndV130FeaturesTest {
         assertEquals(1, first["episode"]?.jsonObject?.get("number")?.jsonPrimitive?.int)
         assertEquals("Jujutsu Kaisen", first["show"]?.jsonObject?.get("title")?.jsonPrimitive?.content)
         assertEquals(2023, first["show"]?.jsonObject?.get("year")?.jsonPrimitive?.int)
+    }
+
+    @Test
+    fun continueWatchingFilter_hidesFinishedSeasonAndReappearsWhenNewEpisodeReleases() = runTest {
+        val tempDir = Files.createTempDirectory("aw_continue_watching_test").toFile()
+        try {
+            val repo = HistoryRepository(tempDir)
+            val completedSeasonAnime = AnimeItem(
+                id = "7431",
+                title = "Chainsaw Man",
+                totalEpisodes = 12,
+                releasedEpisodes = 12,
+            )
+
+            // 1. Mid-episode 12 -> MUST show in Continue Watching
+            repo.updateProgress(
+                anime = completedSeasonAnime,
+                episodeNum = "12",
+                videoId = "v12",
+                positionMs = 600_000L,
+                durationMs = 1_440_000L,
+                isAtLatestEpisode = true,
+            )
+            assertTrue(repo.getEntry(completedSeasonAnime.uniqueKey)!!.shouldShowInContinueWatching)
+
+            // 2. Completed episode 12/12 -> MUST be hidden from Continue Watching, kept in History
+            repo.updateProgress(
+                anime = completedSeasonAnime,
+                episodeNum = "12",
+                videoId = "v12",
+                positionMs = 1_400_000L,
+                durationMs = 1_440_000L,
+                isAtLatestEpisode = true,
+            )
+            val finished = repo.getEntry(completedSeasonAnime.uniqueKey)!!
+            assertTrue(finished.completed)
+            assertTrue(finished.isCaughtUp)
+            assertFalse(finished.shouldShowInContinueWatching)
+
+            // 3. Legacy completed entry without isAtLatestEpisode flag -> still caught-up via totalEpisodes
+            val legacyFinished = WatchHistoryEntry(
+                anime = AnimeItem(id = "900", title = "Frieren", totalEpisodes = 28),
+                currentEpisodeNum = "28",
+                currentVideoId = "v28",
+                completed = true,
+                isAtLatestEpisode = false,
+            )
+            assertFalse(legacyFinished.shouldShowInContinueWatching)
+
+            // 4. Ongoing anime finishes Ep. 10/10 -> hidden, then Ep. 11 releases -> reappears!
+            val ongoingAnime = AnimeItem(id = "800", title = "Solo Leveling", releasedEpisodes = 10)
+            repo.updateProgress(
+                anime = ongoingAnime,
+                episodeNum = "10",
+                videoId = "v10",
+                positionMs = 1_420_000L,
+                durationMs = 1_440_000L,
+                isAtLatestEpisode = true,
+            )
+            assertFalse(repo.getEntry(ongoingAnime.uniqueKey)!!.shouldShowInContinueWatching)
+
+            repo.syncKnownEpisodeAvailability(ongoingAnime.uniqueKey, availableEpisodes = 11, lastEpisodeNum = "11")
+            repo.flush()
+            val afterNewDrop = repo.getEntry(ongoingAnime.uniqueKey)!!
+            assertTrue(afterNewDrop.shouldShowInContinueWatching)
+            assertEquals(11, afterNewDrop.anime.releasedEpisodes)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun animeUnityDeepLinkParser_parsesSupportedLinksAndBlocksUntrustedDomains() {
+        val detail = AnimeUnityDeepLinkParser.parse("https://animeunity.cx/anime/7431-steel-ball-run")
+        assertEquals(AnimeUnityDeepLink.AnimeDetail("7431", "steel-ball-run", isDubHint = false), detail)
+
+        val dubDetail = AnimeUnityDeepLinkParser.parse("https://www.animeunity.so/anime/7431-steel-ball-run-ita")
+        assertEquals(AnimeUnityDeepLink.AnimeDetail("7431", "steel-ball-run-ita", isDubHint = true), dubDetail)
+
+        val episode = AnimeUnityDeepLinkParser.parse("https://animeunity.cx/anime/7431-steel-ball-run/112459")
+        assertEquals(AnimeUnityDeepLink.EpisodePlayback("7431", "steel-ball-run", "112459", isDubHint = false), episode)
+
+        assertEquals(AnimeUnityDeepLink.Calendar, AnimeUnityDeepLinkParser.parse("https://animeunity.cx/calendario"))
+        assertEquals(AnimeUnityDeepLink.Search("chainsaw man"), AnimeUnityDeepLinkParser.parse("https://animeunity.cx/archivio?title=chainsaw+man"))
+        assertEquals(AnimeUnityDeepLink.Home(trending = true), AnimeUnityDeepLinkParser.parse("https://animeunity.cx/top-anime"))
+        assertEquals(AnimeUnityDeepLink.Home(trending = false), AnimeUnityDeepLinkParser.parse("http://animeunity.to/"))
+
+        // Untrusted phishing hosts and non-numeric anime paths must be rejected
+        assertEquals(null, AnimeUnityDeepLinkParser.parse("https://animeunity.evil.com/anime/7431-test"))
+        assertEquals(null, AnimeUnityDeepLinkParser.parse("https://animeunity.cx/anime/not-numeric"))
+        assertEquals(null, AnimeUnityDeepLinkParser.parse("javascript:alert(1)"))
     }
 }

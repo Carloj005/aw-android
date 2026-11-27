@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.CloudDone
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.FileUpload
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Security
@@ -72,6 +73,7 @@ sealed interface SettingsEvent {
     data class ToggleSuiteTvQuickAction(val enabled: Boolean) : SettingsEvent
     data object ExportSuiteTvHistory : SettingsEvent
     data object OpenSuiteTv : SettingsEvent
+    data object OpenSupportedLinksSettings : SettingsEvent
     data class ToggleAutoCheckUpdates(val enabled: Boolean) : SettingsEvent
     data object CheckUpdatesNow : SettingsEvent
     data object OpenUpdateDialog : SettingsEvent
@@ -387,6 +389,31 @@ private fun NetworkAndStorageSection(
             checked = settings.wifiOnlyDownloads,
             onCheckedChange = { onEvent(SettingsEvent.ToggleWifiOnlyDownloads(it)) },
         )
+        Spacer(Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Link supportati AnimeUnity", color = cs.onSurface, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = "Apri direttamente in AW Anime i link animeunity.* ricevuti o toccati nel browser",
+                    color = cs.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            FilledTonalButton(
+                onClick = { onEvent(SettingsEvent.OpenSupportedLinksSettings) },
+                shape = CircleShape,
+            ) {
+                Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Attiva")
+            }
+        }
         Spacer(Modifier.height(14.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),

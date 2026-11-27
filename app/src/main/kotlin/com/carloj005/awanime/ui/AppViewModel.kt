@@ -12,6 +12,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.carloj005.awanime.AppContainer
 import com.carloj005.awanime.AwAnimeApp
+import com.carloj005.awanime.data.integrations.AnimeUnityDeepLinkParser
 import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.AppBackupData
@@ -219,16 +220,97 @@ class AppViewModel(
         openAnimeById(savedId, savedTitle, savedDub)
     }
 
-    fun openAnimeById(animeId: String, title: String, isDub: Boolean) {
+    fun openAnimeById(animeId: String, title: String, isDub: Boolean, slug: String = "") {
         if (animeId.isBlank()) return
+        val resolvedTitle = title.ifBlank { AnimeUnityDeepLinkParser.slugToDisplayTitle(slug) }
         openAnimeDetail(
             AnimeItem(
                 id = animeId,
-                title = title.ifBlank { "Anime" },
+                slug = slug,
+                title = resolvedTitle,
                 isDub = isDub,
                 audioLabel = if (isDub) "Italiano" else "Giapponese",
             )
         )
+    }
+
+    /**
+     * Resolves an incoming AnimeUnity direct episode link (`/anime/<id>-<slug>/<videoId>`):
+     * shows the detail screen immediately while fetching episodes, matches `videoId` across both
+     * SUB and ITA variants if needed, and starts playback directly on the linked episode.
+     */
+    fun openEpisodeFromDeepLink(
+        animeId: String,
+        slug: String,
+        videoId: String,
+        isDubHint: Boolean,
+    ) {
+        if (animeId.isBlank()) return
+        detailJob?.cancel()
+        playbackLaunchJob?.cancel()
+
+        val placeholder = AnimeItem(
+            id = animeId,
+            slug = slug,
+            title = AnimeUnityDeepLinkParser.slugToDisplayTitle(slug),
+            isDub = isDubHint,
+            audioLabel = if (isDubHint) "Italiano" else "Giapponese",
+        )
+        savedStateHandle[KEY_SAVED_DETAIL_ID] = animeId
+        savedStateHandle[KEY_SAVED_DETAIL_TITLE] = placeholder.title
+        savedStateHandle[KEY_SAVED_DETAIL_DUB] = isDubHint
+        _detailState.value = DetailUiState(anime = placeholder, episodes = emptyList(), isLoading = true, error = null)
+
+        detailJob = viewModelScope.launch {
+            runCatchingCancellable {
+                val primaryAnime = runCatchingCancellable { client.getAnimeDetails(animeId, isDubHint) }
+                    .getOrDefault(placeholder)
+                val primaryEps = client.getEpisodes(primaryAnime.id, primaryAnime.isDub)
+                val primaryIdx = primaryEps.indexOfFirst { it.videoId == videoId }
+                if (primaryIdx >= 0) {
+                    return@runCatchingCancellable Triple(primaryAnime, primaryEps, primaryIdx)
+                }
+
+                // Shared episode link may belong to the alternate language variant (SUB vs ITA)
+                val altDub = !isDubHint
+                val hasAltVariant = if (altDub) primaryAnime.hasDubVariant else primaryAnime.hasSubVariant
+                if (hasAltVariant) {
+                    val altAnime = runCatchingCancellable { client.getAnimeDetails(primaryAnime.id, altDub) }
+                        .getOrDefault(primaryAnime.copy(isDub = altDub, audioLabel = if (altDub) "Italiano" else "Giapponese"))
+                    val altEps = runCatchingCancellable { client.getEpisodes(altAnime.id, altDub) }
+                        .getOrDefault(emptyList())
+                    val altIdx = altEps.indexOfFirst { it.videoId == videoId }
+                    if (altIdx >= 0) {
+                        return@runCatchingCancellable Triple(altAnime, altEps, altIdx)
+                    }
+                }
+                Triple(primaryAnime, primaryEps, -1)
+            }.onSuccess { (resolvedAnime, eps, matchedIdx) ->
+                savedStateHandle[KEY_SAVED_DETAIL_TITLE] = resolvedAnime.title
+                savedStateHandle[KEY_SAVED_DETAIL_DUB] = resolvedAnime.isDub
+                historyRepo.syncKnownEpisodeAvailability(
+                    uniqueKey = resolvedAnime.uniqueKey,
+                    availableEpisodes = eps.size,
+                    lastEpisodeNum = eps.lastOrNull()?.number,
+                )
+                _detailState.value = DetailUiState(
+                    anime = resolvedAnime,
+                    episodes = eps,
+                    isLoading = false,
+                    error = null,
+                )
+                if (matchedIdx >= 0) {
+                    startPlayback(resolvedAnime, eps, matchedIdx, resumeFromHistory = true)
+                }
+            }.onFailure { err ->
+                _detailState.value = DetailUiState(
+                    anime = placeholder,
+                    episodes = emptyList(),
+                    isLoading = false,
+                    error = err.message ?: "Impossibile aprire il link episodio AnimeUnity",
+                )
+            }
+        }
     }
 
     fun loadHome(filter: LatestFilter = _homeState.value.selectedFilter, forceRefresh: Boolean = false) {
@@ -264,6 +346,17 @@ class AppViewModel(
                 list to carousel
             }.onSuccess { (list, carousel) ->
                 homeCache[filter] = list
+                for (item in list) {
+                    val latestInt = item.latestEpisodeNum?.trim()?.split(".", "-")?.firstOrNull()?.toIntOrNull() ?: 0
+                    val avail = maxOf(item.releasedEpisodes, latestInt)
+                    if (avail > 0) {
+                        historyRepo.syncKnownEpisodeAvailability(
+                            uniqueKey = item.uniqueKey,
+                            availableEpisodes = avail,
+                            lastEpisodeNum = item.latestEpisodeNum,
+                        )
+                    }
+                }
                 _homeState.update { st ->
                     st.copy(
                         selectedFilter = filter,
@@ -409,6 +502,11 @@ class AppViewModel(
                 if (favoritesRepo.isFavorite(fullAnime.uniqueKey)) {
                     notificationManager.recordKnownEpisodeCount(fullAnime, eps.size)
                 }
+                historyRepo.syncKnownEpisodeAvailability(
+                    uniqueKey = fullAnime.uniqueKey,
+                    availableEpisodes = eps.size,
+                    lastEpisodeNum = eps.lastOrNull()?.number,
+                )
                 _detailState.value = DetailUiState(
                     anime = fullAnime,
                     episodes = eps,
@@ -635,6 +733,7 @@ class AppViewModel(
         onLaunchImportBackup: () -> Unit,
         onLaunchExportSuiteTv: () -> Unit,
         onOpenSuiteTv: () -> Unit,
+        onOpenSupportedLinksSettings: () -> Unit,
         onRequestNotificationPermissionAndEnable: () -> Unit,
     ) {
         when (event) {
@@ -665,6 +764,7 @@ class AppViewModel(
             is SettingsEvent.ToggleSuiteTvQuickAction -> settingsRepo.update { it.copy(suiteTvQuickAction = event.enabled) }
             SettingsEvent.ExportSuiteTvHistory -> onLaunchExportSuiteTv()
             SettingsEvent.OpenSuiteTv -> onOpenSuiteTv()
+            SettingsEvent.OpenSupportedLinksSettings -> onOpenSupportedLinksSettings()
             SettingsEvent.CheckUpdatesNow -> checkForUpdates(manual = true)
             SettingsEvent.OpenUpdateDialog -> showUpdateDialog()
             SettingsEvent.ExportBackup -> onLaunchExportBackup()

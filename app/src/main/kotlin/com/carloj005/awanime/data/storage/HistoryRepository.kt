@@ -38,6 +38,7 @@ class HistoryRepository(
         videoId: String,
         positionMs: Long,
         durationMs: Long,
+        isAtLatestEpisode: Boolean = false,
     ) {
         val completed = durationMs > 0L && (positionMs * 100L / durationMs) >= HISTORY_COMPLETION_PERCENT
         val savedPosition = if (completed) 0L else positionMs.coerceAtLeast(0L)
@@ -66,12 +67,60 @@ class HistoryRepository(
                 progressMs = savedPosition,
                 durationMs = durationMs.coerceAtLeast(0L),
                 completed = completed,
+                isAtLatestEpisode = completed && isAtLatestEpisode,
                 updatedAt = now,
                 episodesProgress = mergedEps,
             )
 
             mutable.add(0, entry)
             mutable
+        }
+    }
+
+    /**
+     * Synchronizes newly observed episode availability with an existing history entry so that:
+     * - Legacy completed entries at the last episode are accurately marked caught-up.
+     * - Ongoing anime automatically reappear in "Continua a guardare" as soon as a newer episode drops.
+     */
+    fun syncKnownEpisodeAvailability(
+        uniqueKey: String,
+        availableEpisodes: Int,
+        lastEpisodeNum: String? = null,
+    ) {
+        if (availableEpisodes <= 0 && lastEpisodeNum.isNullOrBlank()) return
+        val existing = getEntry(uniqueKey) ?: return
+
+        val curEpInt = existing.currentEpisodeNum.trim().split(".", "-").firstOrNull()?.toIntOrNull()
+        val lastEpInt = lastEpisodeNum?.trim()?.split(".", "-")?.firstOrNull()?.toIntOrNull()
+        val maxKnown = maxOf(availableEpisodes, lastEpInt ?: 0, existing.anime.releasedEpisodes)
+
+        val hasNewerEpisode = curEpInt != null && maxKnown > curEpInt
+        val isAtFinalEpisode = existing.completed && (
+            (!lastEpisodeNum.isNullOrBlank() && existing.currentEpisodeNum.trim() == lastEpisodeNum.trim()) ||
+                (curEpInt != null && maxKnown > 0 && curEpInt >= maxKnown)
+            )
+        val nextAtLatest = when {
+            !existing.completed -> false
+            hasNewerEpisode -> false
+            isAtFinalEpisode -> true
+            else -> existing.isAtLatestEpisode
+        }
+
+        if (maxKnown == existing.anime.releasedEpisodes && nextAtLatest == existing.isAtLatestEpisode) {
+            return
+        }
+
+        store.update { list ->
+            list.map { entry ->
+                if (entry.uniqueKey != uniqueKey) {
+                    entry
+                } else {
+                    entry.copy(
+                        anime = entry.anime.copy(releasedEpisodes = maxOf(entry.anime.releasedEpisodes, maxKnown)),
+                        isAtLatestEpisode = nextAtLatest,
+                    )
+                }
+            }
         }
     }
 

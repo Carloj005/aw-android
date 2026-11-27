@@ -210,6 +210,7 @@ data class WatchHistoryEntry(
     val progressMs: Long = 0L,
     val durationMs: Long = 0L,
     val completed: Boolean = false,
+    val isAtLatestEpisode: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
     val episodesProgress: Map<String, EpisodeProgress> = emptyMap(),
 ) {
@@ -221,6 +222,26 @@ data class WatchHistoryEntry(
             durationMs > 0L -> (progressMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
             else -> 0f
         }
+
+    /**
+     * True when the user completed the final known episode of the season (or the latest aired
+     * episode currently available). Caught-up entries remain in Libreria -> Cronologia but are
+     * hidden from the Home "Continua a guardare" carousel until a newer episode is released.
+     */
+    val isCaughtUp: Boolean
+        get() {
+            if (!completed) return false
+            if (isAtLatestEpisode) return true
+            val epInt = currentEpisodeNum.trim().split(".", "-").firstOrNull()?.toIntOrNull()
+            val knownMax = anime.totalEpisodes?.takeIf { it > 0 }
+                ?: anime.releasedEpisodes.takeIf { it > 0 }
+            if (epInt != null && knownMax != null && epInt >= knownMax) return true
+            if (anime.type.equals("Movie", ignoreCase = true) && epInt == 1) return true
+            return false
+        }
+
+    val shouldShowInContinueWatching: Boolean
+        get() = !isCaughtUp
 }
 
 data class ResumeTarget(

@@ -196,15 +196,21 @@ class PlayerViewModel(
         durationMs: Long,
         forceCompleted: Boolean = false,
     ) {
-        val ep = currentEpisode(request)
+        val idx = _state.value.currentIndex.coerceIn(0, request.episodes.lastIndex)
+        val ep = request.episodes[idx]
+        val isAtLatestEpisode = idx >= request.episodes.lastIndex
+        val enrichedAnime = request.anime.copy(
+            releasedEpisodes = maxOf(request.anime.releasedEpisodes, request.episodes.size),
+        )
         val safePos = if (forceCompleted && durationMs > 0L) durationMs else positionMs.coerceAtLeast(0L)
         if (durationMs > 0L || safePos > MIN_PERSIST_POSITION_MS) {
             historyRepo.updateProgress(
-                anime = request.anime,
+                anime = enrichedAnime,
                 episodeNum = ep.number,
                 videoId = ep.videoId,
                 positionMs = safePos,
                 durationMs = durationMs,
+                isAtLatestEpisode = isAtLatestEpisode,
             )
         }
     }

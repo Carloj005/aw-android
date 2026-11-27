@@ -330,10 +330,7 @@ private fun HistoryCard(
                     trackColor = cs.surfaceContainerHigh,
                 )
                 Spacer(Modifier.height(10.dp))
-                val epNumInt = entry.currentEpisodeNum.toIntOrNull()
-                val knownMax = entry.anime.totalEpisodes
-                    ?: entry.anime.releasedEpisodes.takeIf { it > 0 }
-                val hasNextEpisode = knownMax == null || epNumInt == null || epNumInt < knownMax
+                val hasNextEpisode = !entry.isCaughtUp
                 val context = LocalContext.current
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),

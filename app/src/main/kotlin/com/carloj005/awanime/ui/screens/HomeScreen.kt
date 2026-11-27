@@ -36,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -69,6 +70,9 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
+    val continueWatching = remember(history) {
+        history.filter { it.shouldShowInContinueWatching }
+    }
 
     Column(
         modifier = modifier
@@ -192,8 +196,8 @@ fun HomeScreen(
                             }
                         }
 
-                        // Carosello "Continua a guardare"
-                        if (history.isNotEmpty()) {
+                        // Carosello "Continua a guardare" (nasconde stagioni/anime già completati fino all'ultimo episodio)
+                        if (continueWatching.isNotEmpty()) {
                             item(span = { GridItemSpan(2) }) {
                                 Column(modifier = Modifier.padding(bottom = 6.dp)) {
                                     Text(
@@ -204,7 +208,7 @@ fun HomeScreen(
                                         modifier = Modifier.padding(bottom = 10.dp),
                                     )
                                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                        items(history.take(10), key = { it.uniqueKey }) { entry ->
+                                        items(continueWatching.take(10), key = { it.uniqueKey }) { entry ->
                                             ContinueWatchingCard(
                                                 entry = entry,
                                                 onResume = { onResumeHistory(entry) },

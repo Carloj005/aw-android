@@ -33,8 +33,8 @@ android {
     applicationId = "com.carloj005.awanime"
     minSdk = 26
     targetSdk = 36
-    versionCode = 8
-    versionName = "1.3.1"
+    versionCode = 9
+    versionName = "1.3.2"
     buildConfigField("String", "GITHUB_REPO", "\"Carloj005/aw-android\"")
   }
 

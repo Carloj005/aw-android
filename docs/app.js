@@ -1,12 +1,12 @@
 (() => {
   const REPO = "Carloj005/aw-android";
   const FALLBACK_RELEASE = {
-    tag_name: "v1.3.1",
-    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.3.1/AW-Anime-v1.3.1.apk",
-    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.3.1/AW-Anime-v1.3.1.apk.sha256",
+    tag_name: "v1.3.2",
+    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.3.2/AW-Anime-v1.3.2.apk",
+    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.3.2/AW-Anime-v1.3.2.apk.sha256",
     size_mb: "2.7 MB",
     date: "Ultima release",
-    notes: "Hotfix avvio R8 Full Mode (WorkManager/Room/Coil) + Calendario uscite settimanali, notifiche Preferiti, integrazione Suite TV, download background resumable e architettura Clean Code.",
+    notes: "Apertura diretta link supportati AnimeUnity (schede, episodi diretti, calendario, ricerca), fix stagioni completate in Continua a guardare, Calendario uscite, notifiche Preferiti e integrazione Suite TV.",
   };
 
   // 1. Theme toggle (Dark / Light Material You)
