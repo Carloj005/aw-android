@@ -1,49 +1,31 @@
 package com.carloj005.awanime.data.storage
 
-import android.content.Context
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.EpisodeProgress
+import com.carloj005.awanime.data.model.HISTORY_COMPLETION_PERCENT
 import com.carloj005.awanime.data.model.WatchHistoryEntry
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
 
-class HistoryRepository(context: Context) {
+class HistoryRepository(
+    filesDir: File,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+) {
+    private val store = JsonFileStore(
+        file = File(filesDir, "history.json"),
+        serializer = ListSerializer(WatchHistoryEntry.serializer()),
+        defaultValue = emptyList(),
+        ioDispatcher = ioDispatcher,
+        normalizeLoaded = { list -> list.sortedByDescending { it.updatedAt } to false },
+    )
 
-    private val file = File(context.filesDir, "history.json")
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
-    private val lock = Any()
-
-    private val _history = MutableStateFlow<List<WatchHistoryEntry>>(emptyList())
-    val history: StateFlow<List<WatchHistoryEntry>> = _history.asStateFlow()
-
-    init {
-        _history.value = readFromDisk()
-    }
-
-    private fun readFromDisk(): List<WatchHistoryEntry> = synchronized(lock) {
-        if (!file.exists()) return emptyList()
-        return runCatching {
-            json.decodeFromString<List<WatchHistoryEntry>>(file.readText(Charsets.UTF_8))
-                .sortedByDescending { it.updatedAt }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun writeToDisk(list: List<WatchHistoryEntry>) = synchronized(lock) {
-        val payload = json.encodeToString(list)
-        val tmp = File(file.parentFile, "${file.name}.tmp")
-        tmp.writeText(payload, Charsets.UTF_8)
-        if (!tmp.renameTo(file)) {
-            file.writeText(payload, Charsets.UTF_8)
-            tmp.delete()
-        }
-    }
+    val history: StateFlow<List<WatchHistoryEntry>> = store.state
 
     fun getEntry(uniqueKey: String): WatchHistoryEntry? {
-        return _history.value.firstOrNull { it.uniqueKey == uniqueKey }
+        return store.value.firstOrNull { it.uniqueKey == uniqueKey }
     }
 
     fun getEpisodeProgress(animeUniqueKey: String, episodeNum: String): EpisodeProgress? {
@@ -57,14 +39,14 @@ class HistoryRepository(context: Context) {
         positionMs: Long,
         durationMs: Long,
     ) {
-        val completed = durationMs > 0L && (positionMs * 100L / durationMs) >= 90L
+        val completed = durationMs > 0L && (positionMs * 100L / durationMs) >= HISTORY_COMPLETION_PERCENT
         val savedPosition = if (completed) 0L else positionMs.coerceAtLeast(0L)
         val now = System.currentTimeMillis()
 
-        val updatedList = synchronized(lock) {
-            val current = _history.value.toMutableList()
-            val existingIdx = current.indexOfFirst { it.uniqueKey == anime.uniqueKey }
-            val existing = if (existingIdx >= 0) current.removeAt(existingIdx) else null
+        store.update { currentList ->
+            val mutable = currentList.toMutableList()
+            val existingIdx = mutable.indexOfFirst { it.uniqueKey == anime.uniqueKey }
+            val existing = if (existingIdx >= 0) mutable.removeAt(existingIdx) else null
 
             val mergedEps = (existing?.episodesProgress ?: emptyMap()).toMutableMap()
             mergedEps[episodeNum] = EpisodeProgress(
@@ -76,20 +58,7 @@ class HistoryRepository(context: Context) {
                 updatedAt = now,
             )
 
-            // Conserva metadati ricchi se presenti
-            val mergedAnime = anime.copy(
-                posterUrl = anime.posterUrl ?: existing?.anime?.posterUrl,
-                bannerUrl = anime.bannerUrl ?: existing?.anime?.bannerUrl,
-                coverUrl = anime.coverUrl ?: existing?.anime?.coverUrl,
-                plot = anime.plot.ifBlank { existing?.anime?.plot.orEmpty() },
-                genres = anime.genres.ifEmpty { existing?.anime?.genres.orEmpty() },
-                studios = anime.studios.ifEmpty { existing?.anime?.studios.orEmpty() },
-                anilistId = anime.anilistId.takeIf { it > 0 } ?: (existing?.anime?.anilistId ?: 0),
-                malId = anime.malId.takeIf { it > 0 } ?: (existing?.anime?.malId ?: 0),
-                totalEpisodes = anime.totalEpisodes ?: existing?.anime?.totalEpisodes,
-                releasedEpisodes = maxOf(anime.releasedEpisodes, existing?.anime?.releasedEpisodes ?: 0),
-            )
-
+            val mergedAnime = mergeRichAnimeMetadata(anime, existing?.anime)
             val entry = WatchHistoryEntry(
                 anime = mergedAnime,
                 currentEpisodeNum = episodeNum,
@@ -101,34 +70,24 @@ class HistoryRepository(context: Context) {
                 episodesProgress = mergedEps,
             )
 
-            current.add(0, entry)
-            writeToDisk(current)
-            current.toList()
+            mutable.add(0, entry)
+            mutable
         }
-        _history.value = updatedList
     }
 
     fun remove(uniqueKey: String) {
-        val updated = synchronized(lock) {
-            val next = _history.value.filterNot { it.uniqueKey == uniqueKey }
-            writeToDisk(next)
-            next
-        }
-        _history.value = updated
+        store.update { current -> current.filterNot { it.uniqueKey == uniqueKey } }
     }
 
     fun clearAll() {
-        synchronized(lock) {
-            writeToDisk(emptyList())
-        }
-        _history.value = emptyList()
+        store.update { emptyList() }
     }
 
     fun mergeImport(imported: List<WatchHistoryEntry>) {
         if (imported.isEmpty()) return
-        val merged = synchronized(lock) {
+        store.update { current ->
             val byKey = LinkedHashMap<String, WatchHistoryEntry>()
-            for (e in _history.value) byKey[e.uniqueKey] = e
+            for (entry in current) byKey[entry.uniqueKey] = entry
             for (inc in imported) {
                 val prev = byKey[inc.uniqueKey]
                 if (prev == null || inc.updatedAt >= prev.updatedAt) {
@@ -136,10 +95,25 @@ class HistoryRepository(context: Context) {
                     byKey[inc.uniqueKey] = inc.copy(episodesProgress = mergedEps)
                 }
             }
-            val list = byKey.values.sortedByDescending { it.updatedAt }
-            writeToDisk(list)
-            list
+            byKey.values.sortedByDescending { it.updatedAt }
         }
-        _history.value = merged
+    }
+
+    suspend fun flush() = store.flush()
+
+    private fun mergeRichAnimeMetadata(incoming: AnimeItem, previous: AnimeItem?): AnimeItem {
+        if (previous == null) return incoming
+        return incoming.copy(
+            posterUrl = incoming.posterUrl ?: previous.posterUrl,
+            bannerUrl = incoming.bannerUrl ?: previous.bannerUrl,
+            coverUrl = incoming.coverUrl ?: previous.coverUrl,
+            plot = incoming.plot.ifBlank { previous.plot },
+            genres = incoming.genres.ifEmpty { previous.genres },
+            studios = incoming.studios.ifEmpty { previous.studios },
+            anilistId = incoming.anilistId.takeIf { it > 0 } ?: previous.anilistId,
+            malId = incoming.malId.takeIf { it > 0 } ?: previous.malId,
+            totalEpisodes = incoming.totalEpisodes ?: previous.totalEpisodes,
+            releasedEpisodes = maxOf(incoming.releasedEpisodes, previous.releasedEpisodes),
+        )
     }
 }

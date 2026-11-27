@@ -1,86 +1,55 @@
 package com.carloj005.awanime.data.storage
 
-import android.content.Context
 import com.carloj005.awanime.data.model.AnimeItem
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
 
-class FavoritesRepository(context: Context) {
+class FavoritesRepository(
+    filesDir: File,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+) {
+    private val store = JsonFileStore(
+        file = File(filesDir, "favorites.json"),
+        serializer = ListSerializer(AnimeItem.serializer()),
+        defaultValue = emptyList(),
+        ioDispatcher = ioDispatcher,
+    )
 
-    private val file = File(context.filesDir, "favorites.json")
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
-    private val lock = Any()
-
-    private val _favorites = MutableStateFlow<List<AnimeItem>>(emptyList())
-    val favorites: StateFlow<List<AnimeItem>> = _favorites.asStateFlow()
-
-    init {
-        _favorites.value = readFromDisk()
-    }
-
-    private fun readFromDisk(): List<AnimeItem> = synchronized(lock) {
-        if (!file.exists()) return emptyList()
-        return runCatching {
-            json.decodeFromString<List<AnimeItem>>(file.readText(Charsets.UTF_8))
-        }.getOrDefault(emptyList())
-    }
-
-    private fun writeToDisk(list: List<AnimeItem>) = synchronized(lock) {
-        val payload = json.encodeToString(list)
-        val tmp = File(file.parentFile, "${file.name}.tmp")
-        tmp.writeText(payload, Charsets.UTF_8)
-        if (!tmp.renameTo(file)) {
-            file.writeText(payload, Charsets.UTF_8)
-            tmp.delete()
-        }
-    }
+    val favorites: StateFlow<List<AnimeItem>> = store.state
 
     fun isFavorite(uniqueKey: String): Boolean {
-        return _favorites.value.any { it.uniqueKey == uniqueKey }
+        return store.value.any { it.uniqueKey == uniqueKey }
     }
 
-    fun toggleFavorite(anime: AnimeItem): Boolean {
-        var added = false
-        val updated = synchronized(lock) {
-            val current = _favorites.value.toMutableList()
-            val idx = current.indexOfFirst { it.uniqueKey == anime.uniqueKey }
-            if (idx >= 0) {
-                current.removeAt(idx)
-                added = false
+    fun toggleFavorite(anime: AnimeItem) {
+        store.update { current ->
+            val mutable = current.toMutableList()
+            val existingIdx = mutable.indexOfFirst { it.uniqueKey == anime.uniqueKey }
+            if (existingIdx >= 0) {
+                mutable.removeAt(existingIdx)
             } else {
-                current.add(0, anime)
-                added = true
+                mutable.add(0, anime)
             }
-            writeToDisk(current)
-            current.toList()
+            mutable
         }
-        _favorites.value = updated
-        return added
     }
 
     fun remove(uniqueKey: String) {
-        val updated = synchronized(lock) {
-            val next = _favorites.value.filterNot { it.uniqueKey == uniqueKey }
-            writeToDisk(next)
-            next
-        }
-        _favorites.value = updated
+        store.update { current -> current.filterNot { it.uniqueKey == uniqueKey } }
     }
 
     fun mergeImport(imported: List<AnimeItem>) {
         if (imported.isEmpty()) return
-        val updated = synchronized(lock) {
+        store.update { current ->
             val byKey = LinkedHashMap<String, AnimeItem>()
-            for (item in _favorites.value) byKey[item.uniqueKey] = item
+            for (item in current) byKey[item.uniqueKey] = item
             for (item in imported) byKey.putIfAbsent(item.uniqueKey, item)
-            val list = byKey.values.toList()
-            writeToDisk(list)
-            list
+            byKey.values.toList()
         }
-        _favorites.value = updated
     }
+
+    suspend fun flush() = store.flush()
 }

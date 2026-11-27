@@ -76,6 +76,7 @@ import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.model.EpisodeProgress
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.model.formatTimeMs
+import com.carloj005.awanime.data.model.resolveResumeTarget
 import com.carloj005.awanime.ui.DetailUiState
 import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.components.ErrorRetryBox
@@ -91,6 +92,7 @@ fun DetailScreen(
     historyEntry: WatchHistoryEntry?,
     isFavorite: Boolean,
     downloads: List<DownloadEntry>,
+    shareBaseUrl: String,
     onBack: () -> Unit,
     onRetry: (AnimeItem) -> Unit,
     onToggleFavorite: (AnimeItem) -> Unit,
@@ -119,19 +121,8 @@ fun DetailScreen(
             .associateBy { it.episodeNum }
     }
 
-    val primaryEpisodeIndex = remember(state.episodes, historyEntry) {
-        if (state.episodes.isEmpty()) {
-            0
-        } else if (historyEntry != null) {
-            val idx = state.episodes.indexOfFirst { it.number == historyEntry.currentEpisodeNum }
-            if (idx >= 0) {
-                if (historyEntry.completed && idx + 1 < state.episodes.size) idx + 1 else idx
-            } else {
-                0
-            }
-        } else {
-            0
-        }
+    val resumeTarget = remember(state.episodes, historyEntry) {
+        resolveResumeTarget(state.episodes, historyEntry)
     }
 
     Box(
@@ -194,7 +185,7 @@ fun DetailScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             IconButton(
                                 onClick = {
-                                    val base = com.carloj005.awanime.AwAnimeApp.instance.animeUnityClient.baseUrl
+                                    val base = shareBaseUrl.trimEnd('/')
                                     val shareUrl = if (anime.slug.isNotBlank()) {
                                         "$base/anime/${anime.id}-${anime.slug}"
                                     } else {
@@ -348,15 +339,9 @@ fun DetailScreen(
                         }
                     }
 
-                    if (state.episodes.isNotEmpty()) {
-                        val targetEp = state.episodes[primaryEpisodeIndex]
-                        val ctaText = when {
-                            historyEntry == null -> "Guarda Episodio ${targetEp.number}"
-                            historyEntry.completed -> "Guarda Prossimo (Ep. ${targetEp.number})"
-                            else -> "Riprendi Ep. ${targetEp.number} (${formatTimeMs(historyEntry.progressMs)})"
-                        }
+                    if (resumeTarget != null) {
                         Button(
-                            onClick = { onPlayEpisode(anime, state.episodes, primaryEpisodeIndex) },
+                            onClick = { onPlayEpisode(anime, state.episodes, resumeTarget.episodeIndex) },
                             shape = CircleShape,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -364,7 +349,7 @@ fun DetailScreen(
                         ) {
                             Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(24.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(ctaText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                            Text(resumeTarget.detailCtaLabel(), fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

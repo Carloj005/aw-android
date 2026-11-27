@@ -208,7 +208,7 @@ class MainActivity : ComponentActivity() {
         ContextCompat.registerReceiver(this, pipActionReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
         setContent {
-            val vm: AppViewModel = viewModel()
+            val vm: AppViewModel = viewModel(factory = AppViewModel.Factory)
             val settings by vm.settings.collectAsState()
             val activePlayer by vm.activePlayer.collectAsState()
             val isInPip by isInPipState
@@ -287,21 +287,13 @@ private fun AwAnimeRoot(
     val activePlayer by vm.activePlayer.collectAsState()
     val updateState by vm.updateState.collectAsState()
     val settingsFeedback by vm.settingsFeedback.collectAsState()
+    val cacheSizeBytes by vm.cacheSizeBytes.collectAsState()
 
     val exportBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                val payload = vm.buildBackupJson()
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(payload.toByteArray(Charsets.UTF_8))
-                }
-            }.onSuccess {
-                vm.setSettingsFeedback("Backup esportato con successo!")
-            }.onFailure { err ->
-                vm.setSettingsFeedback("Errore esportazione backup: ${err.message}")
-            }
+            vm.exportBackupToUri(context.contentResolver, uri)
         }
     }
 
@@ -309,17 +301,7 @@ private fun AwAnimeRoot(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { inp ->
-                    inp.bufferedReader(Charsets.UTF_8).readText()
-                }.orEmpty()
-            }.mapCatching { text ->
-                vm.importBackupJson(text).getOrThrow()
-            }.onSuccess { msg ->
-                vm.setSettingsFeedback(msg)
-            }.onFailure { err ->
-                vm.setSettingsFeedback("File backup non valido: ${err.message}")
-            }
+            vm.importBackupFromUri(context.contentResolver, uri)
         }
     }
 
@@ -327,7 +309,6 @@ private fun AwAnimeRoot(
         it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.QUEUED
     }
 
-    // Dialogo Aggiornamento Automatico (GitHub Releases con verifica SHA-256 + Firma)
     if (updateState.showDialog && updateState.availableUpdate != null && activePlayer == null) {
         UpdateDialog(
             state = updateState,
@@ -336,11 +317,10 @@ private fun AwAnimeRoot(
         )
     }
 
-    // 1. Player Fullscreen / PiP
-    if (activePlayer != null) {
+    activePlayer?.let { request ->
         BackHandler { vm.closePlayer() }
         PlayerScreen(
-            request = activePlayer!!,
+            request = request,
             settings = settings,
             isInPipMode = isInPipMode,
             pipCommands = pipCommands,
@@ -351,51 +331,48 @@ private fun AwAnimeRoot(
         return
     }
 
-    // 2. Schermata Impostazioni
     if (showSettings) {
+        LaunchedEffect(Unit) { vm.refreshCacheSize() }
         BackHandler { showSettings = false }
         SettingsScreen(
             settings = settings,
             updateState = updateState,
+            cacheBytes = cacheSizeBytes,
             feedbackMessage = settingsFeedback,
-            onBack = { showSettings = false },
-            onThemeModeChange = { vm.setThemeMode(it) },
-            onDynamicColorsChange = { vm.setDynamicColors(it) },
-            onAutoSkipIntroChange = { vm.setAutoSkipIntro(it) },
-            onAutoSkipOutroChange = { vm.setAutoSkipOutro(it) },
-            onAutoPipChange = { vm.setAutoPipEnabled(it) },
-            onWifiOnlyDownloadsChange = { vm.setWifiOnlyDownloads(it) },
-            onAutoCheckUpdatesChange = { vm.setAutoCheckUpdates(it) },
-            onCheckUpdatesNow = { vm.checkForUpdates(manual = true) },
-            onOpenUpdateDialog = { vm.showUpdateDialog() },
-            onExportBackup = { exportBackupLauncher.launch("aw-anime-backup.json") },
-            onImportBackup = { importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
-            onClearCache = { onDone -> vm.clearAppCache(context, onDone) },
+            onEvent = { event ->
+                vm.onSettingsEvent(
+                    event = event,
+                    onNavigateBack = { showSettings = false },
+                    onLaunchExportBackup = { exportBackupLauncher.launch("aw-anime-backup.json") },
+                    onLaunchImportBackup = {
+                        importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                    },
+                )
+            },
         )
         return
     }
 
-    // 3. Scheda Anime Dettaglio
-    if (detailState.anime != null) {
+    detailState.anime?.let { activeDetailAnime ->
         BackHandler { vm.closeDetail() }
-        val histEntry = history.firstOrNull { it.uniqueKey == detailState.anime?.uniqueKey }
-        val isFav = favorites.any { it.uniqueKey == detailState.anime?.uniqueKey }
+        val histEntry = history.firstOrNull { it.uniqueKey == activeDetailAnime.uniqueKey }
+        val isFav = favorites.any { it.uniqueKey == activeDetailAnime.uniqueKey }
         DetailScreen(
             state = detailState,
             historyEntry = histEntry,
             isFavorite = isFav,
             downloads = downloads,
+            shareBaseUrl = vm.shareBaseUrl,
             onBack = { vm.closeDetail() },
             onRetry = { vm.openAnimeDetail(it) },
             onToggleFavorite = { vm.toggleFavorite(it) },
             onSwitchLanguage = { vm.switchDetailLanguage(it) },
             onPlayEpisode = { anime, eps, idx -> vm.startPlayback(anime, eps, idx) },
-            onDownloadEpisode = { anime, ep -> vm.downloadRepo.enqueueDownload(anime, ep) },
+            onDownloadEpisode = { anime, ep -> vm.enqueueDownload(anime, ep) },
         )
         return
     }
 
-    // 4. Navigazione principale 4 tab Material You 3 Expressive
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -406,11 +383,7 @@ private fun AwAnimeRoot(
                         onClick = { selectedTab = tab },
                         icon = {
                             if (tab == BottomTab.DOWNLOADS && activeDownloadCount > 0) {
-                                BadgedBox(
-                                    badge = {
-                                        Badge { Text(activeDownloadCount.toString()) }
-                                    }
-                                ) {
+                                BadgedBox(badge = { Badge { Text(activeDownloadCount.toString()) } }) {
                                     Icon(tab.icon, contentDescription = tab.label)
                                 }
                             } else {
@@ -456,16 +429,16 @@ private fun AwAnimeRoot(
                     favorites = favorites,
                     onResume = { vm.resumeFromHistory(it) },
                     onOpenDetail = { vm.openAnimeDetail(it) },
-                    onRemoveHistory = { vm.historyRepo.remove(it) },
+                    onRemoveHistory = { vm.removeHistory(it) },
                     onRemoveFavorite = { vm.removeFavorite(it) },
                 )
 
                 BottomTab.DOWNLOADS -> DownloadsScreen(
                     downloads = downloads,
                     onPlayOffline = { vm.playDownloadedEpisode(it) },
-                    onRetry = { vm.downloadRepo.retryDownload(it) },
-                    onCancel = { vm.downloadRepo.cancelDownload(it) },
-                    onDelete = { vm.downloadRepo.deleteDownload(it) },
+                    onRetry = { vm.retryDownload(it) },
+                    onCancel = { vm.cancelDownload(it) },
+                    onDelete = { vm.deleteDownload(it) },
                 )
             }
         }

@@ -326,6 +326,10 @@ private fun HistoryCard(
                     trackColor = cs.surfaceContainerHigh,
                 )
                 Spacer(Modifier.height(10.dp))
+                val epNumInt = entry.currentEpisodeNum.toIntOrNull()
+                val knownMax = entry.anime.totalEpisodes
+                    ?: entry.anime.releasedEpisodes.takeIf { it > 0 }
+                val hasNextEpisode = knownMax == null || epNumInt == null || epNumInt < knownMax
                 Button(
                     onClick = onResume,
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
@@ -335,7 +339,11 @@ private fun HistoryCard(
                     Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text(
-                        text = if (entry.completed) "Prossimo episodio" else "Riprendi",
+                        text = when {
+                            !entry.completed -> "Riprendi"
+                            hasNextEpisode -> "Prossimo episodio"
+                            else -> "Riguarda Ep. ${entry.currentEpisodeNum}"
+                        },
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                     )

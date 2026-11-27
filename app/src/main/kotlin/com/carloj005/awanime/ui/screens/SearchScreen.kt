@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.AnimeStatus
 import com.carloj005.awanime.data.model.SearchFilter
 import com.carloj005.awanime.ui.SearchUiState
 import com.carloj005.awanime.ui.components.BadgePill
@@ -84,8 +85,8 @@ fun SearchScreen(
             SearchFilter.ALL -> state.results
             SearchFilter.SUB -> state.results.filter { !it.isDub }
             SearchFilter.DUB -> state.results.filter { it.isDub }
-            SearchFilter.ONGOING -> state.results.filter { it.status.equals("In corso", ignoreCase = true) }
-            SearchFilter.COMPLETED -> state.results.filter { it.status.equals("Finito", ignoreCase = true) }
+            SearchFilter.ONGOING -> state.results.filter { it.animeStatus == AnimeStatus.ONGOING }
+            SearchFilter.COMPLETED -> state.results.filter { it.animeStatus == AnimeStatus.COMPLETED }
         }
     }
 

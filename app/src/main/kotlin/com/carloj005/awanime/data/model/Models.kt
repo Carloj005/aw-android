@@ -1,6 +1,10 @@
 package com.carloj005.awanime.data.model
 
 import kotlinx.serialization.Serializable
+import java.util.Locale
+
+const val HISTORY_COMPLETION_PERCENT = 90L
+const val SKIP_END_MARGIN_MS = 800L
 
 @Serializable
 enum class LatestFilter(val label: String) {
@@ -17,6 +21,22 @@ enum class SearchFilter(val label: String) {
     DUB("ITA"),
     ONGOING("In corso"),
     COMPLETED("Finiti"),
+}
+
+enum class AnimeStatus(val label: String) {
+    ONGOING("In corso"),
+    COMPLETED("Finito"),
+    UPCOMING("Non rilasciato"),
+    UNKNOWN("Sconosciuto");
+
+    companion object {
+        fun fromRaw(raw: String?): AnimeStatus = when (raw?.trim()?.lowercase(Locale.ROOT)) {
+            "ongoing", "in corso" -> ONGOING
+            "completed", "terminato", "finito" -> COMPLETED
+            "upcoming", "not_yet_released", "non rilasciato" -> UPCOMING
+            else -> UNKNOWN
+        }
+    }
 }
 
 @Serializable
@@ -53,7 +73,8 @@ data class SkipSegment(
     val source: String = "vixcloud",
     val verified: Boolean = true,
 ) {
-    fun contains(positionMs: Long): Boolean = positionMs in startMs..(endMs - 800L).coerceAtLeast(startMs)
+    fun contains(positionMs: Long): Boolean =
+        positionMs in startMs..(endMs - SKIP_END_MARGIN_MS).coerceAtLeast(startMs)
 }
 
 @Serializable
@@ -68,7 +89,7 @@ data class AnimeItem(
     val year: Int? = null,
     val totalEpisodes: Int? = null,
     val runtimeMinutes: Int? = null,
-    val status: String = "Sconosciuto",
+    val status: String = AnimeStatus.UNKNOWN.label,
     val score: String? = null,
     val views: Long = 0L,
     val posterUrl: String? = null,
@@ -88,6 +109,8 @@ data class AnimeItem(
     val hasDubVariant: Boolean = false,
 ) {
     val uniqueKey: String get() = "${id}_${if (isDub) "ita" else "sub"}"
+
+    val animeStatus: AnimeStatus get() = AnimeStatus.fromRaw(status)
 
     val displayImageUrl: String?
         get() = posterUrl?.takeIf { it.isNotBlank() }
@@ -123,6 +146,11 @@ data class StreamResolution(
     val referer: String,
     val qualityLabel: String = "1080p",
     val skipSegments: List<SkipSegment> = emptyList(),
+)
+
+data class DirectDownloadSource(
+    val url: String,
+    val referer: String,
 )
 
 @Serializable
@@ -161,6 +189,68 @@ data class WatchHistoryEntry(
             durationMs > 0L -> (progressMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
             else -> 0f
         }
+}
+
+data class ResumeTarget(
+    val episodeIndex: Int,
+    val episode: EpisodeItem,
+    val startPositionMs: Long,
+    val advancesToNextEpisode: Boolean,
+    val replaysCompletedLastEpisode: Boolean,
+) {
+    fun detailCtaLabel(): String = when {
+        advancesToNextEpisode -> "Guarda Prossimo (Ep. ${episode.number})"
+        replaysCompletedLastEpisode -> "Riguarda Ep. ${episode.number}"
+        startPositionMs > 0L -> "Riprendi Ep. ${episode.number} (${formatTimeMs(startPositionMs)})"
+        else -> "Guarda Episodio ${episode.number}"
+    }
+}
+
+fun resolveResumeTarget(
+    episodes: List<EpisodeItem>,
+    historyEntry: WatchHistoryEntry?,
+): ResumeTarget? {
+    if (episodes.isEmpty()) return null
+    if (historyEntry == null) {
+        return ResumeTarget(
+            episodeIndex = 0,
+            episode = episodes.first(),
+            startPositionMs = 0L,
+            advancesToNextEpisode = false,
+            replaysCompletedLastEpisode = false,
+        )
+    }
+
+    val matchedIdx = episodes.indexOfFirst { it.number == historyEntry.currentEpisodeNum }
+    if (matchedIdx < 0) {
+        return ResumeTarget(
+            episodeIndex = 0,
+            episode = episodes.first(),
+            startPositionMs = 0L,
+            advancesToNextEpisode = false,
+            replaysCompletedLastEpisode = false,
+        )
+    }
+
+    if (historyEntry.completed) {
+        val hasNext = matchedIdx + 1 < episodes.size
+        val targetIdx = if (hasNext) matchedIdx + 1 else matchedIdx
+        return ResumeTarget(
+            episodeIndex = targetIdx,
+            episode = episodes[targetIdx],
+            startPositionMs = 0L,
+            advancesToNextEpisode = hasNext,
+            replaysCompletedLastEpisode = !hasNext,
+        )
+    }
+
+    return ResumeTarget(
+        episodeIndex = matchedIdx,
+        episode = episodes[matchedIdx],
+        startPositionMs = historyEntry.progressMs.coerceAtLeast(0L),
+        advancesToNextEpisode = false,
+        replaysCompletedLastEpisode = false,
+    )
 }
 
 @Serializable
@@ -220,9 +310,9 @@ fun formatTimeMs(ms: Long): String {
     val minutes = (totalSeconds % 3600L) / 60L
     val seconds = totalSeconds % 60L
     return if (hours > 0L) {
-        String.format("%d:%02d:%02d", hours, minutes, seconds)
+        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
     } else {
-        String.format("%02d:%02d", minutes, seconds)
+        String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
 }
 
@@ -230,8 +320,8 @@ fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "0 MB"
     val mb = bytes.toDouble() / (1024.0 * 1024.0)
     return if (mb >= 1024.0) {
-        String.format("%.2f GB", mb / 1024.0)
+        String.format(Locale.US, "%.2f GB", mb / 1024.0)
     } else {
-        String.format("%.1f MB", mb)
+        String.format(Locale.US, "%.1f MB", mb)
     }
 }

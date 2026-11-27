@@ -33,6 +33,11 @@
 -keep class androidx.media3.** { *; }
 -dontwarn androidx.media3.**
 
+# WorkManager DownloadWorker reflective instantiation
+-keep class com.carloj005.awanime.data.storage.DownloadWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+
 # Strip verbose debug logs in release builds
 -assumenosideeffects class android.util.Log {
     public static boolean isLoggable(java.lang.String, int);
