@@ -21,6 +21,12 @@
 }
 -keepclassmembers enum com.carloj005.awanime.data.model.** { *; }
 
+# Keep Coil ImageLoaderFactory implementation on AwAnimeApp (checked via `is ImageLoaderFactory`)
+-keep class coil.ImageLoaderFactory { *; }
+-keep class com.carloj005.awanime.AwAnimeApp implements coil.ImageLoaderFactory {
+    public coil.ImageLoader newImageLoader();
+}
+
 # Keep OkHttp / Okio optional platform classes cleanly
 -dontwarn okhttp3.**
 -dontwarn okio.**
@@ -29,10 +35,31 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
 
-# Media3 / ExoPlayer ships its own consumer ProGuard rules in each AAR.
+# Media3 / ExoPlayer: keep reflectively instantiated HLS factory while allowing R8 to shrink unused modules
+-keep class androidx.media3.exoplayer.hls.HlsMediaSource$Factory {
+    public <init>(...);
+}
 -dontwarn androidx.media3.**
 
-# WorkManager reflective worker instantiation
+# Room & WorkManager (R8 Full Mode in AGP 9 strips reflective Room *_Impl constructors and WorkerParameters)
+-keep class * extends androidx.room.RoomDatabase {
+    public <init>();
+}
+-keep class * extends androidx.work.impl.WorkDatabase { *; }
+-keep class androidx.work.impl.WorkDatabase_Impl { *; }
+-keep class androidx.work.WorkerParameters { *; }
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+-keep class * extends androidx.work.InputMerger {
+    public <init>();
+}
+-keep class * implements androidx.startup.Initializer {
+    public <init>();
+}
+-keep class * implements androidx.savedstate.SavedStateRegistry$AutoRecreated {
+    public <init>();
+}
 -keep class com.carloj005.awanime.data.storage.DownloadWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }

@@ -4,6 +4,9 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.3.1 — Hotfix R8 Full Mode (WorkManager / Room / Coil)
+- **Fix crash all'avvio su Android (`v1.3.0`)**: R8 Full Mode di AGP 9 rimuoveva il costruttore riflessivo di `WorkDatabase_Impl` (Room/WorkManager), `WorkerParameters` e l'interfaccia `coil.ImageLoaderFactory` su `AwAnimeApp`. Aggiunte regole ProGuard mirate per Room/WorkManager/Startup/SavedState/Coil e inizializzazione `by lazy` crash-safe su `AwAnimeApp.container`.
+
 ## Novità v1.3.0 — Calendario Uscite, Notifiche Preferiti, Suite TV & Clean Code Hardening
 - **Calendario Uscite Settimanali**: nuova tab **Uscite** collegata in tempo reale al palinsesto settimanale (`/api/calendar`) con selettore giorno (`Oggi`, giorni della settimana, `TBA`), filtri rapidi (`Tutti`, `SUB`, `ITA`, `Preferiti`), orari locali stimati, stato **Disponibile / In ritardo / In pausa** e avvio diretto degli episodi usciti.
 - **Notifiche Locali Nuovi Episodi Preferiti**: worker periodico `WorkManager` configurabile in *Impostazioni → Notifiche Preferiti* (`1h / 3h / 6h / 12h` + tasto **"Controlla Preferiti ora"**) con supporto permesso `POST_NOTIFICATIONS` su Android 13+, baseline anti-spam al primo avvio e tap sulla notifica che apre direttamente la scheda dell'anime.

@@ -6,12 +6,13 @@ import coil.ImageLoaderFactory
 
 class AwAnimeApp : Application(), ImageLoaderFactory {
 
-    lateinit var container: AppContainer
-        private set
+    val container: AppContainer by lazy { AppContainer(this) }
 
     override fun onCreate() {
         super.onCreate()
-        container = AppContainer(this)
+        // Trigger lazy initialization eagerly on normal app startup while keeping
+        // cold-start WorkManager / ContentProvider access crash-safe.
+        container
     }
 
     override fun newImageLoader(): ImageLoader {
