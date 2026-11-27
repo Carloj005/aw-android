@@ -259,19 +259,19 @@ object SkipTimeValidator {
 
         val result = mutableListOf<SkipSegment>()
         for (kind in listOf(SkipKind.INTRO, SkipKind.OUTRO, SkipKind.RECAP)) {
-            val aEx = exactMap[kind]
-            val aGl = globalMap[kind]
-            val aGlRaw = rawGlobalByKind[kind]
-            val bAs = askipMap[kind]
+            val aniExact = exactMap[kind]
+            val aniGlobal = globalMap[kind]
+            val aniGlobalUnfiltered = rawGlobalByKind[kind]
+            val animeSkipSeg = askipMap[kind]
 
             // 1. Consenso incrociato tra AniSkip e Anime-Skip -> massima affidabilità (verified = true)
-            if (bAs != null) {
-                if (aEx != null && agree(aEx, bAs)) {
-                    result.add(toSkipSegment(aEx, realDurationSec, verified = true, overrideSource = "verified"))
+            if (animeSkipSeg != null) {
+                if (aniExact != null && agree(aniExact, animeSkipSeg)) {
+                    result.add(toSkipSegment(aniExact, realDurationSec, verified = true, overrideSource = "verified"))
                     continue
                 }
-                if (aGl != null && agree(aGl, bAs)) {
-                    result.add(toSkipSegment(aGl, realDurationSec, verified = true, overrideSource = "verified"))
+                if (aniGlobal != null && agree(aniGlobal, animeSkipSeg)) {
+                    result.add(toSkipSegment(aniGlobal, realDurationSec, verified = true, overrideSource = "verified"))
                     continue
                 }
             }
@@ -282,22 +282,24 @@ object SkipTimeValidator {
             }
 
             // 3. Conflitto diretto tra AniSkip e Anime-Skip sullo stesso tipo di segmento -> rifiuta entrambi!
-            if (bAs != null && (aEx != null || aGl != null)) {
+            if (animeSkipSeg != null && (aniExact != null || aniGlobal != null)) {
                 continue
             }
 
             // 4. Auto-conflitto interno di AniSkip (es. Chainsaw Man Ep 1: len=1525 -> 363s vs len=0 -> 230s!)
-            if (aEx != null && aGlRaw != null && abs(aEx.startMs - aGlRaw.startMs) > MAX_SELF_CONFLICT_MS) {
+            if (aniExact != null && aniGlobalUnfiltered != null &&
+                abs(aniExact.startMs - aniGlobalUnfiltered.startMs) > MAX_SELF_CONFLICT_MS
+            ) {
                 continue
             }
 
             // 5. Singola sorgente coerente e strutturalmente valida
             when {
-                aEx != null -> result.add(toSkipSegment(aEx, realDurationSec, verified = false))
-                bAs != null -> result.add(toSkipSegment(bAs, realDurationSec, verified = false))
-                aGl != null && (realDurationSec <= 0 || aGl.episodeLengthSec == null ||
-                    abs(aGl.episodeLengthSec - realDurationSec) <= MAX_EPISODE_LENGTH_DRIFT_SEC) -> {
-                    result.add(toSkipSegment(aGl, realDurationSec, verified = false))
+                aniExact != null -> result.add(toSkipSegment(aniExact, realDurationSec, verified = false))
+                animeSkipSeg != null -> result.add(toSkipSegment(animeSkipSeg, realDurationSec, verified = false))
+                aniGlobal != null && (realDurationSec <= 0 || aniGlobal.episodeLengthSec == null ||
+                    abs(aniGlobal.episodeLengthSec - realDurationSec) <= MAX_EPISODE_LENGTH_DRIFT_SEC) -> {
+                    result.add(toSkipSegment(aniGlobal, realDurationSec, verified = false))
                 }
             }
         }

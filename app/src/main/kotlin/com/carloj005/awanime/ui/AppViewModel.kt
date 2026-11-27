@@ -1,6 +1,7 @@
 package com.carloj005.awanime.ui
 
-import android.content.Context
+import android.content.ContentResolver
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.carloj005.awanime.AwAnimeApp
@@ -15,7 +16,15 @@ import com.carloj005.awanime.data.model.SearchFilter
 import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.UpdateInfo
 import com.carloj005.awanime.data.model.WatchHistoryEntry
+import com.carloj005.awanime.data.model.resolveNextEpisodeIndex
+import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.data.network.SearchUtils
+import com.carloj005.awanime.data.storage.DownloadRepository
+import com.carloj005.awanime.data.storage.FavoritesRepository
+import com.carloj005.awanime.data.storage.HistoryRepository
+import com.carloj005.awanime.data.storage.SettingsRepository
+import com.carloj005.awanime.data.update.AppUpdater
+import com.carloj005.awanime.util.runCatchingCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,7 +35,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 
 data class HomeUiState(
     val selectedFilter: LatestFilter = LatestFilter.ALL,
@@ -40,6 +51,7 @@ data class HomeUiState(
 
 data class SearchUiState(
     val query: String = "",
+    val submittedQuery: String = "",
     val filter: SearchFilter = SearchFilter.ALL,
     val results: List<AnimeItem> = emptyList(),
     val isLoading: Boolean = false,
@@ -75,33 +87,46 @@ data class UpdateUiState(
     val pendingApkFile: File? = null,
 )
 
-class AppViewModel : ViewModel() {
+class AppViewModel(
+    private val client: AnimeUnityClient,
+    private val historyRepo: HistoryRepository,
+    private val favoritesRepo: FavoritesRepository,
+    private val downloadRepo: DownloadRepository,
+    private val settingsRepo: SettingsRepository,
+    private val updater: AppUpdater,
+    private val cacheDir: File,
+) : ViewModel() {
 
-    private val client = AwAnimeApp.instance.animeUnityClient
-    val historyRepo = AwAnimeApp.instance.historyRepository
-    val favoritesRepo = AwAnimeApp.instance.favoritesRepository
-    val downloadRepo = AwAnimeApp.instance.downloadRepository
-    val settingsRepo = AwAnimeApp.instance.settingsRepository
-    val updater = AwAnimeApp.instance.appUpdater
+    constructor() : this(
+        client = AwAnimeApp.instance.animeUnityClient,
+        historyRepo = AwAnimeApp.instance.historyRepository,
+        favoritesRepo = AwAnimeApp.instance.favoritesRepository,
+        downloadRepo = AwAnimeApp.instance.downloadRepository,
+        settingsRepo = AwAnimeApp.instance.settingsRepository,
+        updater = AwAnimeApp.instance.appUpdater,
+        cacheDir = AwAnimeApp.instance.cacheDir,
+    )
 
     val history: StateFlow<List<WatchHistoryEntry>> = historyRepo.history
     val favorites: StateFlow<List<AnimeItem>> = favoritesRepo.favorites
     val downloads: StateFlow<List<DownloadEntry>> = downloadRepo.downloads
     val settings: StateFlow<AppSettings> = settingsRepo.settings
 
+    val activeBaseUrl: String get() = client.baseUrl
+
     private val backupJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
     private val homeCache = mutableMapOf<LatestFilter, List<AnimeItem>>()
     private var homeJob: Job? = null
     private var searchJob: Job? = null
     private var detailJob: Job? = null
+    private var playbackLaunchJob: Job? = null
     private var updateJob: Job? = null
+    private var backupJob: Job? = null
 
     private val _homeState = MutableStateFlow(HomeUiState())
     val homeState: StateFlow<HomeUiState> = _homeState.asStateFlow()
 
-    private val _searchState = MutableStateFlow(
-        SearchUiState(recentQueries = settingsRepo.settings.value.recentQueries)
-    )
+    private val _searchState = MutableStateFlow(SearchUiState())
     val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
 
     private val _detailState = MutableStateFlow(DetailUiState())
@@ -116,10 +141,21 @@ class AppViewModel : ViewModel() {
     private val _settingsFeedback = MutableStateFlow<String?>(null)
     val settingsFeedback: StateFlow<String?> = _settingsFeedback.asStateFlow()
 
+    private val _cacheSizeBytes = MutableStateFlow(0L)
+    val cacheSizeBytes: StateFlow<Long> = _cacheSizeBytes.asStateFlow()
+
     init {
         loadHome(LatestFilter.ALL)
-        if (settings.value.autoCheckUpdates) {
-            checkForUpdates(manual = false)
+        viewModelScope.launch {
+            settings.collect { currentSettings ->
+                _searchState.update { it.copy(recentQueries = currentSettings.recentQueries) }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepo.awaitLoaded()
+            if (settings.value.autoCheckUpdates) {
+                checkForUpdates(manual = false)
+            }
         }
     }
 
@@ -149,9 +185,11 @@ class AppViewModel : ViewModel() {
             )
         }
         homeJob = viewModelScope.launch {
-            runCatching {
+            runCatchingCancellable {
                 val list = client.getLatestEpisodes(filter)
-                val carousel = runCatching { client.getHomeCarousel(forceRefresh = forceRefresh) }.getOrDefault(emptyList())
+                val carousel = runCatchingCancellable {
+                    client.getHomeCarousel(forceRefresh = forceRefresh)
+                }.getOrDefault(emptyList())
                 list to carousel
             }.onSuccess { (list, carousel) ->
                 homeCache[filter] = list
@@ -189,26 +227,25 @@ class AppViewModel : ViewModel() {
 
     fun clearRecentQueries() {
         settingsRepo.update { it.copy(recentQueries = emptyList()) }
-        _searchState.update { it.copy(recentQueries = emptyList()) }
     }
 
     fun performSearch(rawQuery: String = _searchState.value.query) {
         val q = rawQuery.trim()
         if (q.isEmpty()) return
         searchJob?.cancel()
-        val updatedRecent = (listOf(q) + _searchState.value.recentQueries.filterNot { it.equals(q, ignoreCase = true) }).take(10)
+        val updatedRecent = (listOf(q) + settings.value.recentQueries.filterNot { it.equals(q, ignoreCase = true) }).take(10)
         settingsRepo.update { it.copy(recentQueries = updatedRecent) }
         _searchState.update { st ->
             st.copy(
                 query = q,
+                submittedQuery = q,
                 isLoading = true,
                 hasSearched = true,
                 error = null,
-                recentQueries = updatedRecent,
             )
         }
         searchJob = viewModelScope.launch {
-            runCatching { client.search(q) }
+            runCatchingCancellable { client.search(q) }
                 .onSuccess { list ->
                     _searchState.update {
                         it.copy(results = list, isLoading = false, error = null)
@@ -230,8 +267,8 @@ class AppViewModel : ViewModel() {
         detailJob?.cancel()
         _detailState.value = DetailUiState(anime = anime, episodes = emptyList(), isLoading = true, error = null)
         detailJob = viewModelScope.launch {
-            runCatching {
-                val fullAnime = runCatching { client.getAnimeDetails(anime.id, anime.isDub) }
+            runCatchingCancellable {
+                val fullAnime = runCatchingCancellable { client.getAnimeDetails(anime.id, anime.isDub) }
                     .getOrDefault(anime)
                 val eps = client.getEpisodes(fullAnime.id, fullAnime.isDub)
                 fullAnime to eps
@@ -245,6 +282,7 @@ class AppViewModel : ViewModel() {
             }.onFailure { err ->
                 val offlineEps = downloadRepo.downloads.value
                     .filter { it.animeId == anime.id && it.isDub == anime.isDub && it.status == DownloadStatus.COMPLETED }
+                    .sortedWith(compareBy { SearchUtils.episodeSortKey(it.episodeNum) })
                     .map {
                         EpisodeItem(
                             number = it.episodeNum,
@@ -296,6 +334,26 @@ class AppViewModel : ViewModel() {
         favoritesRepo.remove(uniqueKey)
     }
 
+    fun removeHistoryEntry(uniqueKey: String) {
+        historyRepo.remove(uniqueKey)
+    }
+
+    fun enqueueDownload(anime: AnimeItem, episode: EpisodeItem) {
+        downloadRepo.enqueueDownload(anime, episode)
+    }
+
+    fun retryDownload(entry: DownloadEntry) {
+        downloadRepo.retryDownload(entry)
+    }
+
+    fun cancelDownload(key: String) {
+        downloadRepo.cancelDownload(key)
+    }
+
+    fun deleteDownload(key: String) {
+        downloadRepo.deleteDownload(key)
+    }
+
     fun startPlayback(
         anime: AnimeItem,
         episodes: List<EpisodeItem>,
@@ -320,17 +378,15 @@ class AppViewModel : ViewModel() {
     }
 
     fun quickWatchAnime(anime: AnimeItem) {
-        viewModelScope.launch {
-            val fullAnime = runCatching { client.getAnimeDetails(anime.id, anime.isDub) }.getOrDefault(anime)
-            val eps = runCatching { client.getEpisodes(fullAnime.id, fullAnime.isDub) }.getOrDefault(emptyList())
+        playbackLaunchJob?.cancel()
+        playbackLaunchJob = viewModelScope.launch {
+            val fullAnime = runCatchingCancellable { client.getAnimeDetails(anime.id, anime.isDub) }
+                .getOrDefault(anime)
+            val eps = runCatchingCancellable { client.getEpisodes(fullAnime.id, fullAnime.isDub) }
+                .getOrDefault(emptyList())
             if (eps.isNotEmpty()) {
                 val hist = historyRepo.getEntry(fullAnime.uniqueKey)
-                val targetIdx = if (hist != null) {
-                    val idx = eps.indexOfFirst { it.number == hist.currentEpisodeNum }.coerceAtLeast(0)
-                    if (hist.completed && idx + 1 < eps.size) idx + 1 else idx
-                } else {
-                    0
-                }
+                val targetIdx = resolveNextEpisodeIndex(eps, hist)
                 startPlayback(fullAnime, eps, targetIdx, resumeFromHistory = true)
             } else {
                 openAnimeDetail(fullAnime)
@@ -339,13 +395,15 @@ class AppViewModel : ViewModel() {
     }
 
     fun resumeFromHistory(entry: WatchHistoryEntry) {
-        viewModelScope.launch {
+        playbackLaunchJob?.cancel()
+        playbackLaunchJob = viewModelScope.launch {
             val fullAnime = if (entry.anime.malId == 0) {
-                runCatching { client.getAnimeDetails(entry.anime.id, entry.anime.isDub) }.getOrDefault(entry.anime)
+                runCatchingCancellable { client.getAnimeDetails(entry.anime.id, entry.anime.isDub) }
+                    .getOrDefault(entry.anime)
             } else {
                 entry.anime
             }
-            val loadedEps = runCatching { client.getEpisodes(fullAnime.id, fullAnime.isDub) }
+            val loadedEps = runCatchingCancellable { client.getEpisodes(fullAnime.id, fullAnime.isDub) }
                 .getOrElse {
                     listOf(
                         EpisodeItem(
@@ -357,7 +415,7 @@ class AppViewModel : ViewModel() {
                 }
             if (loadedEps.isEmpty()) return@launch
             val curIdx = loadedEps.indexOfFirst { it.number == entry.currentEpisodeNum }.coerceAtLeast(0)
-            val targetIdx = if (entry.completed && curIdx + 1 < loadedEps.size) curIdx + 1 else curIdx
+            val targetIdx = resolveNextEpisodeIndex(loadedEps, entry)
             val startMs = if (targetIdx == curIdx && !entry.completed) entry.progressMs else 0L
             _activePlayer.value = PlayerLaunchRequest(
                 anime = fullAnime,
@@ -399,12 +457,9 @@ class AppViewModel : ViewModel() {
     }
 
     fun closePlayer() {
+        playbackLaunchJob?.cancel()
         _activePlayer.value = null
     }
-
-    // =========================================================================
-    // Impostazioni, Backup/Ripristino, Cache & Aggiornamenti Automatici
-    // =========================================================================
 
     fun setThemeMode(mode: ThemeMode) = settingsRepo.update { it.copy(themeMode = mode) }
     fun setDynamicColors(enabled: Boolean) = settingsRepo.update { it.copy(dynamicColors = enabled) }
@@ -420,7 +475,7 @@ class AppViewModel : ViewModel() {
 
     fun buildBackupJson(): String {
         val data = AppBackupData(
-            schemaVersion = 1,
+            schemaVersion = AppBackupData.CURRENT_SCHEMA_VERSION,
             exportedAt = System.currentTimeMillis(),
             settings = settings.value,
             history = history.value,
@@ -432,34 +487,66 @@ class AppViewModel : ViewModel() {
     fun importBackupJson(rawText: String): Result<String> {
         return runCatching {
             val parsed = backupJson.decodeFromString<AppBackupData>(rawText)
+            if (parsed.schemaVersion > AppBackupData.CURRENT_SCHEMA_VERSION) {
+                throw IllegalArgumentException(
+                    "Versione backup (${parsed.schemaVersion}) non supportata da questa versione dell'app."
+                )
+            }
             historyRepo.mergeImport(parsed.history)
             favoritesRepo.mergeImport(parsed.favorites)
             settingsRepo.replace(parsed.settings)
-            _searchState.update { it.copy(recentQueries = parsed.settings.recentQueries) }
             "Ripristino completato: ${parsed.history.size} cronologia, ${parsed.favorites.size} preferiti."
         }
     }
 
-    fun clearAppCache(context: Context, onComplete: (Long) -> Unit) {
-        viewModelScope.launch {
-            val freed = withContext(Dispatchers.IO) {
-                var bytes = 0L
-                fun deleteDirContent(dir: File) {
-                    dir.listFiles()?.forEach { f ->
-                        if (f.isDirectory) {
-                            deleteDirContent(f)
-                            f.delete()
-                        } else {
-                            bytes += f.length()
-                            f.delete()
-                        }
-                    }
+    fun exportBackupToUri(contentResolver: ContentResolver, uri: Uri) {
+        backupJob?.cancel()
+        backupJob = viewModelScope.launch {
+            runCatchingCancellable {
+                val payload = buildBackupJson()
+                withContext(Dispatchers.IO) {
+                    val out = contentResolver.openOutputStream(uri)
+                        ?: throw IOException("Impossibile aprire il file di destinazione")
+                    out.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
                 }
-                deleteDirContent(context.cacheDir)
-                bytes
+            }.onSuccess {
+                _settingsFeedback.value = "Backup esportato con successo!"
+            }.onFailure { err ->
+                _settingsFeedback.value = "Errore esportazione backup: ${err.message}"
             }
+        }
+    }
+
+    fun importBackupFromUri(contentResolver: ContentResolver, uri: Uri) {
+        backupJob?.cancel()
+        backupJob = viewModelScope.launch {
+            runCatchingCancellable {
+                val rawText = withContext(Dispatchers.IO) {
+                    readTextWithSizeLimit(contentResolver, uri, MAX_BACKUP_BYTES)
+                }
+                importBackupJson(rawText).getOrThrow()
+            }.onSuccess { msg ->
+                _settingsFeedback.value = msg
+            }.onFailure { err ->
+                _settingsFeedback.value = "File backup non valido: ${err.message}"
+            }
+        }
+    }
+
+    fun refreshCacheSize() {
+        viewModelScope.launch {
+            _cacheSizeBytes.value = withContext(Dispatchers.IO) { computeDirBytes(cacheDir) }
+        }
+    }
+
+    fun clearAppCache() {
+        viewModelScope.launch {
+            val remaining = withContext(Dispatchers.IO) {
+                deleteDirContents(cacheDir)
+                computeDirBytes(cacheDir)
+            }
+            _cacheSizeBytes.value = remaining
             _settingsFeedback.value = "Cache svuotata con successo."
-            onComplete(freed)
         }
     }
 
@@ -473,7 +560,7 @@ class AppViewModel : ViewModel() {
             )
         }
         updateJob = viewModelScope.launch {
-            runCatching { updater.checkForUpdate() }
+            runCatchingCancellable { updater.checkForUpdate() }
                 .onSuccess { info ->
                     _updateState.update {
                         it.copy(
@@ -541,7 +628,7 @@ class AppViewModel : ViewModel() {
                     needsInstallPermission = false,
                 )
             }
-            runCatching {
+            runCatchingCancellable {
                 updater.downloadUpdateApk(info) { frac, dl, tot ->
                     _updateState.update {
                         it.copy(
@@ -579,6 +666,51 @@ class AppViewModel : ViewModel() {
                         statusMessage = "Aggiornamento bloccato/fallito: ${err.message}",
                     )
                 }
+            }
+        }
+    }
+
+    companion object {
+        private const val MAX_BACKUP_BYTES = 10 * 1024 * 1024 // 10 MB
+
+        private fun readTextWithSizeLimit(
+            contentResolver: ContentResolver,
+            uri: Uri,
+            maxBytes: Int,
+        ): String {
+            val input = contentResolver.openInputStream(uri)
+                ?: throw IOException("Impossibile leggere il file selezionato")
+            input.use { stream ->
+                val out = ByteArrayOutputStream()
+                val buf = ByteArray(16 * 1024)
+                var total = 0
+                while (true) {
+                    val read = stream.read(buf)
+                    if (read == -1) break
+                    total += read
+                    if (total > maxBytes) {
+                        throw IllegalArgumentException("File troppo grande (massimo ${maxBytes / (1024 * 1024)} MB)")
+                    }
+                    out.write(buf, 0, read)
+                }
+                return out.toString(Charsets.UTF_8.name())
+            }
+        }
+
+        private fun computeDirBytes(dir: File): Long {
+            var total = 0L
+            dir.listFiles()?.forEach { file ->
+                total += if (file.isDirectory) computeDirBytes(file) else file.length()
+            }
+            return total
+        }
+
+        private fun deleteDirContents(dir: File) {
+            dir.listFiles()?.forEach { file ->
+                if (file.isDirectory) {
+                    deleteDirContents(file)
+                }
+                file.delete()
             }
         }
     }

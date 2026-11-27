@@ -29,8 +29,7 @@
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
 
-# Media3 / ExoPlayer
--keep class androidx.media3.** { *; }
+# Media3 / ExoPlayer ships its own consumer ProGuard rules in each AAR.
 -dontwarn androidx.media3.**
 
 # Strip verbose debug logs in release builds

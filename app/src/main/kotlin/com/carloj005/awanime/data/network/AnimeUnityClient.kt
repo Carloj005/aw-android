@@ -5,44 +5,34 @@ import android.net.Uri
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.EpisodeItem
 import com.carloj005.awanime.data.model.LatestFilter
-import com.carloj005.awanime.data.model.SkipKind
 import com.carloj005.awanime.data.model.SkipSegment
-import com.carloj005.awanime.data.model.StreamCandidate
 import com.carloj005.awanime.data.model.StreamResolution
+import com.carloj005.awanime.util.runCatchingCancellable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.longOrNull
+import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * Client nativo Kotlin per il nuovo AnimeUnity (https://animeunity.cx, Laravel + Inertia.js + API REST),
- * con:
- * - Auto-risoluzione dominio e scansione TLD di emergenza + verifica anti-phishing Inertia
- * - DNS-over-HTTPS automatico contro blocchi DNS ISP
- * - Espansione varianti lingua (SUB / ITA / Cinese / Coreano / Inglese)
- * - Ordinamento cronologico delle stagioni e ricerca fuzzy tollerante ai refusi
- * - Streaming 1080p FHD HLS diretto su VixCloud + fallback MP4 diretto
+ * Client nativo Kotlin per AnimeUnity (Laravel + Inertia.js + API REST),
+ * con auto-risoluzione dominio, DNS-over-HTTPS e delega modulare a:
+ * - [AnimeUnityParser] per il parsing dei payload JSON
+ * - [VixCloudExtractor] per l'estrazione stream HLS/MP4 e timestamp VixCloud
+ * - [SkipDatabaseClient] per la validazione incrociata AniSkip / Anime-Skip
  */
 class AnimeUnityClient(context: Context?) {
 
@@ -55,31 +45,13 @@ class AnimeUnityClient(context: Context?) {
             "cx", "co", "so", "to", "tv", "it", "cc", "io", "me", "ac", "org", "net",
         )
 
-        private val SEASON_LABELS = mapOf(
-            "winter" to "Inverno", "spring" to "Primavera", "summer" to "Estate",
-            "fall" to "Autunno", "autumn" to "Autunno",
-            "inverno" to "Inverno", "primavera" to "Primavera", "estate" to "Estate", "autunno" to "Autunno",
-        )
-
-        private val TYPE_LABELS = mapOf(
-            "tv" to "TV", "movie" to "Movie", "ova" to "OVA",
-            "ona" to "ONA", "tv_short" to "TV Short", "special" to "Special",
-        )
-
-        private val LANGUAGE_LABELS = mapOf(
-            "ita" to "Italiano", "jpn" to "Giapponese", "chn" to "Cinese",
-            "kor" to "Coreano", "eng" to "Inglese",
-        )
-
         private const val PREFS_NAME = "aw_anime_prefs"
         private const val KEY_BASE_URL = "animeunity_base_url"
 
-        fun mapStatus(raw: String?): String = when (raw?.trim()?.lowercase()) {
-            "ongoing", "in corso" -> "In corso"
-            "completed", "terminato", "finito" -> "Finito"
-            "upcoming", "not_yet_released", "non rilasciato" -> "Non rilasciato"
-            else -> "Sconosciuto"
-        }
+        private val TRUSTED_ORIGIN_REGEX = Regex("""^(?:www\.)?animeunity\.[a-z]{2,10}$""")
+        private val DATA_PAGE_REGEX = Regex("""data-page="([^"]+)"""")
+
+        fun mapStatus(raw: String?): String = AnimeUnityParser.mapStatus(raw)
 
         fun isValidAnimeUnityHtml(html: String): Boolean {
             if (html.isBlank()) return false
@@ -106,18 +78,10 @@ class AnimeUnityClient(context: Context?) {
         fun isTrustedAnimeUnityOrigin(rawUrl: String): Boolean {
             val parsed = rawUrl.trim().toHttpUrlOrNull() ?: return false
             if (parsed.scheme != "https") return false
-            val host = parsed.host.lowercase()
-            return Regex("""^(?:www\.)?animeunity\.[a-z]{2,10}$""").matches(host)
+            return TRUSTED_ORIGIN_REGEX.matches(parsed.host.lowercase())
         }
 
-        fun isTrustedEmbedUrl(rawUrl: String): Boolean {
-            val parsed = rawUrl.trim().toHttpUrlOrNull() ?: return false
-            if (parsed.scheme != "https") return false
-            val host = parsed.host.lowercase()
-            return host == "vixcloud.cc" || host.endsWith(".vixcloud.cc") ||
-                host.contains("vixcloud.") || host.contains("vix-content.") ||
-                host.contains("vixsrc.") || isTrustedAnimeUnityOrigin(rawUrl)
-        }
+        fun isTrustedEmbedUrl(rawUrl: String): Boolean = VixCloudExtractor.isTrustedEmbedUrl(rawUrl)
     }
 
     private val prefs = context?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -141,7 +105,7 @@ class AnimeUnityClient(context: Context?) {
     @Volatile
     private var cachedHeroCarousel: List<AnimeItem> = emptyList()
 
-    private val httpsOnlyInterceptor = okhttp3.Interceptor { chain ->
+    private val httpsOnlyInterceptor = Interceptor { chain ->
         val req = chain.request()
         if (req.url.scheme != "https") {
             throw IOException("Connessione HTTP non cifrata bloccata: ${req.url.host}")
@@ -149,23 +113,23 @@ class AnimeUnityClient(context: Context?) {
         chain.proceed(req)
     }
 
-    val okHttpClient: OkHttpClient = OkHttpClient.Builder()
+    // Client base condiviso via newBuilder() per riutilizzare il Dispatcher senza duplicare thread pool.
+    private val baseHttpClient: OkHttpClient = OkHttpClient.Builder()
         .dns(dohDns)
-        .cookieJar(cookieJar)
         .addInterceptor(httpsOnlyInterceptor)
         .followRedirects(true)
         .followSslRedirects(false)
+        .build()
+
+    val okHttpClient: OkHttpClient = baseHttpClient.newBuilder()
+        .cookieJar(cookieJar)
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
     /** Client isolato SENZA cookie di sessione AnimeUnity per chiamate a domini terzi (VixCloud, AniSkip). */
-    val externalOkHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .dns(dohDns)
-        .addInterceptor(httpsOnlyInterceptor)
-        .followRedirects(true)
-        .followSslRedirects(false)
+    val externalOkHttpClient: OkHttpClient = baseHttpClient.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(18, TimeUnit.SECONDS)
         .build()
@@ -176,41 +140,32 @@ class AnimeUnityClient(context: Context?) {
         .build()
 
     /** OkHttpClient dedicato a ExoPlayer (senza cookie, pool compatto anti-503 su nginx, HTTPS-only + DoH). */
-    val mediaOkHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .dns(dohDns)
-        .addInterceptor(httpsOnlyInterceptor)
-        .connectionPool(okhttp3.ConnectionPool(4, 2, TimeUnit.MINUTES))
+    val mediaOkHttpClient: OkHttpClient = baseHttpClient.newBuilder()
+        .connectionPool(ConnectionPool(4, 2, TimeUnit.MINUTES))
         .retryOnConnectionFailure(true)
-        .followRedirects(true)
-        .followSslRedirects(false)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
     /** OkHttpClient separato per i download MP4 in background (evita contesa col player). */
-    val downloadOkHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .dns(dohDns)
-        .addInterceptor(httpsOnlyInterceptor)
-        .connectionPool(okhttp3.ConnectionPool(2, 1, TimeUnit.MINUTES))
+    val downloadOkHttpClient: OkHttpClient = baseHttpClient.newBuilder()
+        .connectionPool(ConnectionPool(2, 1, TimeUnit.MINUTES))
         .retryOnConnectionFailure(true)
-        .followRedirects(true)
-        .followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(35, TimeUnit.SECONDS)
         .build()
 
-    val imageOkHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .dns(dohDns)
-        .addInterceptor(httpsOnlyInterceptor)
-        .followRedirects(true)
-        .followSslRedirects(false)
+    val imageOkHttpClient: OkHttpClient = baseHttpClient.newBuilder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    private val vixCloudExtractor = VixCloudExtractor(externalOkHttpClient, json)
+    private val skipDatabaseClient = SkipDatabaseClient(externalOkHttpClient, json)
+
     private fun extractInertiaPage(html: String): JsonObject? {
-        val m = Regex("""data-page="([^"]+)"""").find(html) ?: return null
-        val decoded = decodeHtmlEntities(m.groupValues[1])
+        val match = DATA_PAGE_REGEX.find(html) ?: return null
+        val decoded = decodeHtmlEntities(match.groupValues[1])
         return runCatching { json.parseToJsonElement(decoded).jsonObject }.getOrNull()
     }
 
@@ -219,45 +174,55 @@ class AnimeUnityClient(context: Context?) {
         sessionMutex.withLock {
             if (sessionReady && inertiaVersion.isNotBlank() && !forceRefresh) return@withLock
 
-            val candidates = linkedSetOf(baseUrl, DEFAULT_BASE_URL, "https://www.animeunity.cx")
-            for (tld in CANDIDATE_TLDS) {
-                candidates.add("https://animeunity.$tld")
-                candidates.add("https://www.animeunity.$tld")
-            }
-
-            for (cand in candidates) {
+            for (candidate in buildCandidateOrigins()) {
                 try {
-                    val req = Request.Builder()
-                        .url("$cand/")
-                        .header("User-Agent", USER_AGENT)
-                        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                        .header("Accept-Language", "it-IT,it;q=0.9,en;q=0.8")
-                        .build()
-                    okHttpClient.newCall(req).execute().use { resp ->
-                        val body = resp.body?.string().orEmpty()
-                        if (resp.isSuccessful && isValidAnimeUnityHtml(body)) {
-                            val finalOrigin = "${resp.request.url.scheme}://${resp.request.url.host}"
-                            if (!isTrustedAnimeUnityOrigin(finalOrigin)) continue
-                            baseUrl = finalOrigin
-                            prefs?.edit()?.putString(KEY_BASE_URL, finalOrigin)?.apply()
-                            val page = extractInertiaPage(body)
-                            inertiaVersion = page?.str("version").orEmpty()
-                            val carouselArr = page?.get("props")?.jsonObject?.get("carouselAnimes") as? JsonArray
-                            if (carouselArr != null) {
-                                cachedHeroCarousel = carouselArr.mapNotNull { el ->
-                                    val obj = el as? JsonObject ?: return@mapNotNull null
-                                    parseAnimeVariants(obj).firstOrNull()
-                                }
-                            }
-                            sessionReady = true
-                            return@withLock
-                        }
-                    }
+                    if (tryBootstrapSession(candidate)) return@withLock
+                } catch (ce: CancellationException) {
+                    throw ce
                 } catch (_: Exception) {
                     continue
                 }
             }
             throw IOException("Impossibile raggiungere AnimeUnity ($baseUrl). Controlla la connessione internet.")
+        }
+    }
+
+    private fun buildCandidateOrigins(): Set<String> {
+        val candidates = linkedSetOf(baseUrl, DEFAULT_BASE_URL, "https://www.animeunity.cx")
+        for (tld in CANDIDATE_TLDS) {
+            candidates.add("https://animeunity.$tld")
+            candidates.add("https://www.animeunity.$tld")
+        }
+        return candidates
+    }
+
+    private fun tryBootstrapSession(origin: String): Boolean {
+        val req = Request.Builder()
+            .url("$origin/")
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "it-IT,it;q=0.9,en;q=0.8")
+            .build()
+        okHttpClient.newCall(req).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful || !isValidAnimeUnityHtml(body)) return false
+
+            val finalOrigin = "${resp.request.url.scheme}://${resp.request.url.host}"
+            if (!isTrustedAnimeUnityOrigin(finalOrigin)) return false
+
+            baseUrl = finalOrigin
+            prefs?.edit()?.putString(KEY_BASE_URL, finalOrigin)?.apply()
+            val page = extractInertiaPage(body)
+            inertiaVersion = page?.str("version").orEmpty()
+            val carouselArr = page?.get("props")?.jsonObject?.get("carouselAnimes") as? JsonArray
+            if (carouselArr != null) {
+                cachedHeroCarousel = carouselArr.mapNotNull { el ->
+                    val obj = el as? JsonObject ?: return@mapNotNull null
+                    AnimeUnityParser.parseAnimeVariants(obj).firstOrNull()
+                }
+            }
+            sessionReady = true
+            return true
         }
     }
 
@@ -331,18 +296,7 @@ class AnimeUnityClient(context: Context?) {
     suspend fun getLatestEpisodes(filter: LatestFilter): List<AnimeItem> = withContext(Dispatchers.IO) {
         ensureSession()
         if (filter == LatestFilter.TRENDING) {
-            val payload = apiGetJson("/api/top-anime?page=1").jsonObject
-            val arr = payload["data"]?.jsonArray ?: JsonArray(emptyList())
-            val seenTrending = HashSet<String>()
-            return@withContext arr.mapNotNull { elem ->
-                val obj = elem as? JsonObject ?: return@mapNotNull null
-                val expanded = parseAnimeVariants(obj)
-                val primary = expanded.firstOrNull() ?: return@mapNotNull null
-                if (!seenTrending.add(primary.uniqueKey)) return@mapNotNull null
-                primary.copy(
-                    latestEpisodeNum = if (primary.releasedEpisodes > 0) primary.releasedEpisodes.toString() else "1",
-                )
-            }
+            return@withContext fetchTrendingAnime()
         }
 
         val langQuery = when (filter) {
@@ -363,11 +317,10 @@ class AnimeUnityClient(context: Context?) {
                 val videoId = itemObj.str("id") ?: continue
                 val epNum = epObj.str("number") ?: "1"
                 val lang = itemObj.str("language")?.lowercase() ?: "jpn"
-                val isDub = lang == "ita"
-                val parsed = parseSingleAnime(
+                val parsed = AnimeUnityParser.parseSingleAnime(
                     obj = animeObj,
                     variantLang = lang,
-                    forceDub = isDub,
+                    forceDub = lang == "ita",
                     latestEpNum = epNum,
                     latestVideoId = videoId,
                 )
@@ -380,6 +333,20 @@ class AnimeUnityClient(context: Context?) {
             if (page >= lastPage) break
         }
         collected
+    }
+
+    private fun fetchTrendingAnime(): List<AnimeItem> {
+        val payload = apiGetJson("/api/top-anime?page=1").jsonObject
+        val arr = payload["data"]?.jsonArray ?: JsonArray(emptyList())
+        val seenTrending = HashSet<String>()
+        return arr.mapNotNull { elem ->
+            val obj = elem as? JsonObject ?: return@mapNotNull null
+            val primary = AnimeUnityParser.parseAnimeVariants(obj).firstOrNull() ?: return@mapNotNull null
+            if (!seenTrending.add(primary.uniqueKey)) return@mapNotNull null
+            primary.copy(
+                latestEpisodeNum = if (primary.releasedEpisodes > 0) primary.releasedEpisodes.toString() else "1",
+            )
+        }
     }
 
     private fun querySearchRecords(query: String): List<AnimeItem> {
@@ -399,6 +366,8 @@ class AnimeUnityClient(context: Context?) {
                 val perPage = payload.intVal("per_page") ?: 30
                 if (arr.size < perPage || page >= lastPage) break
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (_: Exception) {
             // fallback to /api/search
         }
@@ -413,15 +382,13 @@ class AnimeUnityClient(context: Context?) {
                     mergedById.putIfAbsent(id, obj)
                 }
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
             if (mergedById.isEmpty()) throw e
         }
 
-        val expanded = mutableListOf<AnimeItem>()
-        for (rec in mergedById.values) {
-            expanded.addAll(parseAnimeVariants(rec))
-        }
-        return expanded
+        return mergedById.values.flatMap { AnimeUnityParser.parseAnimeVariants(it) }
     }
 
     suspend fun search(rawQuery: String): List<AnimeItem> = withContext(Dispatchers.IO) {
@@ -437,7 +404,7 @@ class AnimeUnityClient(context: Context?) {
         // Fallback multi-token / fuzzy per tollerare refusi (es. "jojo steal ball run")
         val fallbackByKey = LinkedHashMap<String, AnimeItem>()
         for (subQuery in SearchUtils.generateFallbackQueries(query)) {
-            val subHits = runCatching { querySearchRecords(subQuery) }.getOrDefault(emptyList())
+            val subHits = runCatchingCancellable { querySearchRecords(subQuery) }.getOrDefault(emptyList())
             for (item in subHits) {
                 fallbackByKey.putIfAbsent(item.uniqueKey, item)
             }
@@ -452,8 +419,8 @@ class AnimeUnityClient(context: Context?) {
         val page = inertiaGet("/anime/$animeId-x", component = "Anime", partialData = listOf("anime"))
         val animeObj = page["props"]?.jsonObject?.get("anime") as? JsonObject
             ?: throw IOException("Dettagli anime non disponibili")
-        val lang = if (isDub) "ita" else pickPreferredSubLanguage(animeObj)
-        parseSingleAnime(animeObj, variantLang = lang, forceDub = isDub)
+        val lang = if (isDub) "ita" else AnimeUnityParser.pickPreferredSubLanguage(animeObj)
+        AnimeUnityParser.parseSingleAnime(animeObj, variantLang = lang, forceDub = isDub)
     }
 
     suspend fun getEpisodes(animeId: String, isDub: Boolean): List<EpisodeItem> = withContext(Dispatchers.IO) {
@@ -496,27 +463,7 @@ class AnimeUnityClient(context: Context?) {
             val arr = payload["episodes"]?.jsonArray ?: break
             if (arr.isEmpty()) break
 
-            var addedAny = false
-            for (el in arr) {
-                val epObj = el as? JsonObject ?: continue
-                val num = epObj.str("number")?.trim()?.takeIf { it.isNotEmpty() } ?: continue
-                val epId = epObj.str("id").orEmpty()
-                val isFiller = epObj.boolVal("is_filler") ?: false
-                val videos = epObj["videos"]?.jsonArray ?: continue
-                val chosenVideo = pickEpisodeVideo(videos, wantDub = isDub) ?: continue
-                val videoId = chosenVideo.str("id") ?: continue
-                if (num !in collected) addedAny = true
-                collected[num] = EpisodeItem(
-                    episodeId = epId,
-                    number = num,
-                    videoId = videoId,
-                    language = chosenVideo.str("language")?.lowercase() ?: if (isDub) "ita" else "jpn",
-                    runtimeSeconds = chosenVideo.intVal("runtime") ?: 0,
-                    scwsId = chosenVideo.str("scws_id").orEmpty(),
-                    isFiller = isFiller,
-                )
-            }
-
+            val addedAny = collectEpisodesPage(arr, isDub, collected)
             val curStart = payload.intVal("start") ?: 1
             val tabSize = payload.intVal("tab_size") ?: 120
             val total = payload.intVal("total") ?: 0
@@ -534,6 +481,34 @@ class AnimeUnityClient(context: Context?) {
         collected.values.sortedWith(compareBy { SearchUtils.episodeSortKey(it.number) })
     }
 
+    private fun collectEpisodesPage(
+        arr: JsonArray,
+        isDub: Boolean,
+        collected: MutableMap<String, EpisodeItem>,
+    ): Boolean {
+        var addedAny = false
+        for (el in arr) {
+            val epObj = el as? JsonObject ?: continue
+            val num = epObj.str("number")?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            val epId = epObj.str("id").orEmpty()
+            val isFiller = epObj.boolVal("is_filler") ?: false
+            val videos = epObj["videos"]?.jsonArray ?: continue
+            val chosenVideo = AnimeUnityParser.pickEpisodeVideo(videos, wantDub = isDub) ?: continue
+            val videoId = chosenVideo.str("id") ?: continue
+            if (num !in collected) addedAny = true
+            collected[num] = EpisodeItem(
+                episodeId = epId,
+                number = num,
+                videoId = videoId,
+                language = chosenVideo.str("language")?.lowercase() ?: if (isDub) "ita" else "jpn",
+                runtimeSeconds = chosenVideo.intVal("runtime") ?: 0,
+                scwsId = chosenVideo.str("scws_id").orEmpty(),
+                isFiller = isFiller,
+            )
+        }
+        return addedAny
+    }
+
     suspend fun resolveStream(animeId: String, videoId: String): StreamResolution = withContext(Dispatchers.IO) {
         val pageData = inertiaGet(
             path = "/anime/$animeId-x/$videoId",
@@ -541,280 +516,30 @@ class AnimeUnityClient(context: Context?) {
             partialData = listOf("embedUrl", "video"),
         )
         val embedUrl = pageData["props"]?.jsonObject?.str("embedUrl")?.trim()
-            ?.takeIf { isTrustedEmbedUrl(it) }
+            ?.takeIf { VixCloudExtractor.isTrustedEmbedUrl(it) }
             ?: throw IOException("embedUrl VixCloud non valido o non trovato per questo episodio")
 
-        val embedReq = Request.Builder()
-            .url(embedUrl)
-            .header("User-Agent", USER_AGENT)
-            .header("Referer", "$baseUrl/")
-            .build()
-
-        val embedHtml = externalOkHttpClient.newCall(embedReq).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IOException("Errore VixCloud embed HTTP ${resp.code}")
-            }
-            val text = resp.body?.string().orEmpty()
-            if ("canPlayFHD=1" in embedUrl && "canPlayFHD" !in text) {
-                "$text\nwindow.canPlayFHD = true;\n"
-            } else {
-                text
-            }
-        }
-
-        val embedOrigin = embedUrl.toHttpUrlOrNull()?.let { "${it.scheme}://${it.host}/" } ?: "https://vixcloud.cc/"
-
-        val candidates = mutableListOf<StreamCandidate>()
-        val seenUrls = HashSet<String>()
-        var qualityLabel = "1080p HLS"
-
-        val hlsMaster = extractHlsMasterUrl(embedHtml)
-        if (hlsMaster != null) {
-            val best = resolveBestHlsVariant(hlsMaster, embedOrigin)
-            if (best != null && seenUrls.add(best.first)) {
-                candidates.add(StreamCandidate(url = best.first, isHls = true, qualityLabel = "${best.second} HLS"))
-                qualityLabel = "${best.second} HLS"
-            }
-            if (seenUrls.add(hlsMaster)) {
-                candidates.add(StreamCandidate(url = hlsMaster, isHls = true, qualityLabel = "HLS AUTO"))
-            }
-        }
-
-        val directUrl = extractDirectDownloadUrl(embedHtml)
-        if (directUrl != null && seenUrls.add(directUrl)) {
-            candidates.add(StreamCandidate(url = directUrl, isHls = false, qualityLabel = "MP4"))
-        }
-
-        if (candidates.isEmpty()) {
-            throw IOException("Nessuno stream video disponibile per questo episodio")
-        }
-
-        val skipSegments = extractVixCloudTimestamps(embedHtml, runtimeSeconds = 0)
-
-        StreamResolution(
-            candidates = candidates,
-            downloadUrl = directUrl,
-            referer = embedOrigin,
-            qualityLabel = candidates.first().qualityLabel,
-            skipSegments = skipSegments,
-        )
+        vixCloudExtractor.resolveEmbed(embedUrl = embedUrl, referer = "$baseUrl/")
     }
 
-    /**
-     * Estrae e valida i timestamp reali di Intro / Outro direttamente dall'HTML embed di VixCloud
-     * (`timestamps: [{"kind":"intro","start_time":59.9,"end_time":147.9,"confidence":156.8,...}, ...]`).
-     */
     internal fun extractVixCloudTimestamps(embedHtml: String, runtimeSeconds: Int = 0): List<SkipSegment> {
-        val m = Regex("""\btimestamps\s*:\s*(\[[^\]]*\])""", RegexOption.DOT_MATCHES_ALL).find(embedHtml)
-            ?: return emptyList()
-        val arr = runCatching { json.parseToJsonElement(m.groupValues[1]).jsonArray }.getOrNull()
-            ?: return emptyList()
-        val raw = mutableListOf<RawSkipCandidate>()
-        for (el in arr) {
-            val obj = el as? JsonObject ?: continue
-            val kindStr = obj.str("kind")?.lowercase() ?: continue
-            val kind = when (kindStr) {
-                "intro", "op", "opening" -> SkipKind.INTRO
-                "outro", "ed", "ending" -> SkipKind.OUTRO
-                "recap" -> SkipKind.RECAP
-                else -> continue
-            }
-            val startSec = obj.doubleVal("start_time") ?: continue
-            val endSec = obj.doubleVal("end_time") ?: continue
-            val confidence = obj.doubleVal("confidence")
-            raw.add(
-                RawSkipCandidate(
-                    kind = kind,
-                    startMs = (startSec * 1000.0).toLong().coerceAtLeast(0L),
-                    endMs = (endSec * 1000.0).toLong(),
-                    source = "vixcloud",
-                    confidence = confidence,
-                )
-            )
-        }
-        return SkipTimeValidator.validateVixCloudSegments(raw, runtimeSeconds)
+        return vixCloudExtractor.extractVixCloudTimestamps(embedHtml, runtimeSeconds)
     }
 
-    /**
-     * Risolve i timestamp di Intro/Outro/Recap quando VixCloud non li espone, eseguendo in parallelo
-     * una validazione incrociata tra AniSkip v2 (durata esatta + consenso globale) e Anime-Skip GraphQL
-     * (via `anilistId` o titolo) così da eliminare falsi positivi (es. Ep. 1 senza sigla).
-     */
     suspend fun fetchValidatedSkipSegments(
         anime: AnimeItem,
         episodeNum: String,
         episodeLengthSeconds: Int = 0,
-    ): List<SkipSegment> = withContext(Dispatchers.IO) {
-        val epInt = episodeNum.trim().split(".", "-").firstOrNull()?.toIntOrNull()
-            ?: return@withContext emptyList()
-        if (epInt <= 0) return@withContext emptyList()
-
-        val fastClient = externalOkHttpClient.newBuilder()
-            .connectTimeout(4, TimeUnit.SECONDS)
-            .readTimeout(4, TimeUnit.SECONDS)
-            .build()
-
-        coroutineScope {
-            val exactDeferred = async {
-                if (anime.malId > 0 && episodeLengthSeconds > 0) {
-                    queryAniSkipRaw(fastClient, anime.malId, epInt, episodeLengthSeconds)
-                } else {
-                    emptyList()
-                }
-            }
-            val globalDeferred = async {
-                if (anime.malId > 0) {
-                    queryAniSkipRaw(fastClient, anime.malId, epInt, 0)
-                } else {
-                    emptyList()
-                }
-            }
-            val animeSkipDeferred = async {
-                queryAnimeSkipEpisode(fastClient, anime, epInt, episodeLengthSeconds)
-            }
-
-            SkipTimeValidator.reconcileCrowdsourcedSegments(
-                aniSkipExact = exactDeferred.await(),
-                aniSkipGlobal = globalDeferred.await(),
-                animeSkip = animeSkipDeferred.await(),
-                realDurationSec = episodeLengthSeconds,
-            )
-        }
-    }
-
-    private fun queryAniSkipRaw(
-        fastClient: OkHttpClient,
-        malId: Int,
-        epInt: Int,
-        episodeLengthSeconds: Int,
-    ): List<RawSkipCandidate> {
-        return try {
-            val url = "https://api.aniskip.com/v2/skip-times/$malId/$epInt" +
-                "?types=op&types=mixed-op&types=ed&types=mixed-ed&types=recap&episodeLength=$episodeLengthSeconds"
-            val req = Request.Builder()
-                .url(url)
-                .header("User-Agent", USER_AGENT)
-                .header("Accept", "application/json")
-                .build()
-            fastClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return emptyList()
-                val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
-                if (root.boolVal("found") != true) return emptyList()
-                val results = root["results"] as? JsonArray ?: return emptyList()
-                val list = mutableListOf<RawSkipCandidate>()
-                for (el in results) {
-                    val obj = el as? JsonObject ?: continue
-                    val skipType = obj.str("skipType")?.lowercase() ?: continue
-                    val kind = when (skipType) {
-                        "op", "mixed-op" -> SkipKind.INTRO
-                        "ed", "mixed-ed" -> SkipKind.OUTRO
-                        "recap" -> SkipKind.RECAP
-                        else -> continue
-                    }
-                    val interval = obj["interval"] as? JsonObject ?: continue
-                    val startMs = ((interval.doubleVal("startTime") ?: continue) * 1000.0).toLong().coerceAtLeast(0L)
-                    val endMs = ((interval.doubleVal("endTime") ?: continue) * 1000.0).toLong()
-                    val dbEpLen = obj.doubleVal("episodeLength")
-                    list.add(
-                        RawSkipCandidate(
-                            kind = kind,
-                            startMs = startMs,
-                            endMs = endMs,
-                            episodeLengthSec = dbEpLen,
-                            source = "aniskip",
-                            isMixed = skipType.startsWith("mixed-"),
-                        )
-                    )
-                }
-                list
-            }
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun queryAnimeSkipEpisode(
-        fastClient: OkHttpClient,
-        anime: AnimeItem,
-        epInt: Int,
-        realDurationSec: Int,
-    ): AnimeSkipEpisodeResult {
-        return try {
-            val graphqlEndpoint = "https://api.anime-skip.com/graphql"
-            val mediaType = "application/json; charset=utf-8".toMediaType()
-            val showQuery = if (anime.anilistId > 0) {
-                """{"query":"query { findShowsByExternalId(service: ANILIST, serviceId: \"${anime.anilistId}\") { id episodes { number baseDuration timestamps { at type { name } } } } }"}"""
-            } else {
-                val cleanTitle = SearchUtils.stripDubTags(anime.title)
-                    .replace("\\", "")
-                    .replace("\"", "")
-                    .take(80)
-                if (cleanTitle.length < 3) return AnimeSkipEpisodeResult()
-                """{"query":"query { searchShows(search: \"$cleanTitle\", limit: 3) { id name episodes { number baseDuration timestamps { at type { name } } } } }"}"""
-            }
-
-            val req = Request.Builder()
-                .url(graphqlEndpoint)
-                .header("User-Agent", USER_AGENT)
-                .header("Accept", "application/json")
-                .header("X-Client-ID", "th2oogUKrgOf1J8wMSIUPV0IpBMsLOJi")
-                .post(showQuery.toRequestBody(mediaType))
-                .build()
-
-            fastClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return AnimeSkipEpisodeResult()
-                val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
-                val data = root["data"] as? JsonObject ?: return AnimeSkipEpisodeResult()
-                val shows = (data["findShowsByExternalId"] ?: data["searchShows"]) as? JsonArray
-                    ?: return AnimeSkipEpisodeResult()
-
-                val targetNum = epInt.toString()
-                val matchingEps = mutableListOf<Pair<Double, List<AnimeSkipMarker>>>()
-                for (showEl in shows) {
-                    val showObj = showEl as? JsonObject ?: continue
-                    val eps = showObj["episodes"] as? JsonArray ?: continue
-                    for (epEl in eps) {
-                        val epObj = epEl as? JsonObject ?: continue
-                        if (epObj.str("number")?.trim() != targetNum) continue
-                        val baseDur = epObj.doubleVal("baseDuration") ?: continue
-                        val tsArr = epObj["timestamps"] as? JsonArray ?: continue
-                        val markers = tsArr.mapNotNull { tEl ->
-                            val tObj = tEl as? JsonObject ?: return@mapNotNull null
-                            val at = tObj.doubleVal("at") ?: return@mapNotNull null
-                            val typeName = (tObj["type"] as? JsonObject)?.str("name") ?: return@mapNotNull null
-                            AnimeSkipMarker(atSec = at, typeName = typeName)
-                        }
-                        if (markers.isNotEmpty()) {
-                            matchingEps.add(baseDur to markers)
-                        }
-                    }
-                }
-                if (matchingEps.isEmpty()) return AnimeSkipEpisodeResult()
-
-                val best = if (realDurationSec > 0) {
-                    matchingEps.minByOrNull { kotlin.math.abs(it.first - realDurationSec) }
-                } else {
-                    matchingEps.maxByOrNull { it.second.size }
-                } ?: return AnimeSkipEpisodeResult()
-
-                SkipTimeValidator.parseAnimeSkipEpisode(
-                    markers = best.second,
-                    baseDurationSec = best.first,
-                    realDurationSec = realDurationSec,
-                )
-            }
-        } catch (_: Exception) {
-            AnimeSkipEpisodeResult()
-        }
+    ): List<SkipSegment> {
+        return skipDatabaseClient.fetchValidatedSkipSegments(anime, episodeNum, episodeLengthSeconds)
     }
 
     suspend fun resolveDirectDownloadUrl(animeId: String, videoId: String): String = withContext(Dispatchers.IO) {
         ensureSession()
-        // 1. Prova il nuovo endpoint diretto di AnimeUnity /episode-videos/{id}/download?quality=1080|720|480
-        for (q in listOf(1080, 720, 480)) {
+        for (quality in listOf(1080, 720, 480)) {
             try {
                 val req = Request.Builder()
-                    .url("$baseUrl/episode-videos/$videoId/download?quality=$q")
+                    .url("$baseUrl/episode-videos/$videoId/download?quality=$quality")
                     .header("User-Agent", USER_AGENT)
                     .header("Referer", "$baseUrl/")
                     .build()
@@ -824,147 +549,19 @@ class AnimeUnityClient(context: Context?) {
                         return@withContext location
                     }
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (_: Exception) {
                 continue
             }
         }
-        // 2. Fallback: window.downloadUrl dall'embed VixCloud
         val resolved = resolveStream(animeId, videoId)
         resolved.downloadUrl
             ?: throw IOException("Download MP4 diretto non disponibile per questo episodio")
     }
 
-    private fun extractDirectDownloadUrl(page: String): String? {
-        val m = Regex("""window\.downloadUrl\s*=\s*(['"])(.*?)\1""", RegexOption.DOT_MATCHES_ALL).find(page)
-        val url = m?.groupValues?.getOrNull(2)?.trim()
-        return url?.takeIf { it.startsWith("https://") }
-    }
-
-    private fun extractHlsMasterUrl(page: String): String? {
-        val start = Regex("""window\.masterPlaylist\s*=\s*\{""").find(page) ?: return null
-        val tail = page.substring(start.range.last + 1)
-        val paramsBlock = Regex("""\bparams\s*:\s*\{([^}]*)\}""").find(tail)?.groupValues?.getOrNull(1) ?: return null
-        val rawUrl = Regex("""\burl\s*:\s*(['"])(.*?)\1""").find(tail)?.groupValues?.getOrNull(2)?.trim()
-            ?.takeIf { it.startsWith("http") } ?: return null
-
-        fun param(name: String): String? {
-            return Regex("""(?:['"]?$name['"]?)\s*:\s*(['"])(.*?)\1""")
-                .find(paramsBlock)?.groupValues?.getOrNull(2)
-        }
-
-        val token = param("token")?.takeIf { it.isNotEmpty() } ?: return null
-        val expires = param("expires")?.takeIf { it.isNotEmpty() } ?: return null
-        val asn = param("asn").orEmpty()
-
-        val httpUrl = rawUrl.toHttpUrlOrNull() ?: return null
-        val builder = httpUrl.newBuilder()
-            .setQueryParameter("token", token)
-            .setQueryParameter("expires", expires)
-        if (asn.isNotEmpty()) builder.setQueryParameter("asn", asn)
-        if (Regex("""window\.canPlayFHD\s*=\s*(?:true|1)\b""", RegexOption.IGNORE_CASE).containsMatchIn(page)) {
-            builder.setQueryParameter("h", "1")
-        }
-        return builder.build().toString()
-    }
-
-    /**
-     * Risolve la variante HLS alla massima risoluzione (es. 1920x1080 FHD).
-     * Ritorna Pair(variantUrl, qualityLabel).
-     */
-    private fun resolveBestHlsVariant(masterUrl: String, referer: String): Pair<String, String>? {
-        return try {
-            val req = Request.Builder()
-                .url(masterUrl)
-                .header("User-Agent", USER_AGENT)
-                .header("Referer", referer)
-                .build()
-            externalOkHttpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                val text = resp.body?.string().orEmpty()
-                if (!text.trimStart().startsWith("#EXTM3U")) return null
-                val lines = text.lines()
-                if (lines.any { it.startsWith("#EXT-X-MEDIA:") }) return null
-
-                data class Variant(val pixels: Long, val bw: Long, val height: Int, val url: String)
-                val variants = mutableListOf<Variant>()
-                val baseHttp = resp.request.url
-
-                for (i in 0 until lines.size - 1) {
-                    val line = lines[i]
-                    if (line.startsWith("#EXT-X-STREAM-INF")) {
-                        val res = Regex("""\bRESOLUTION=(\d+)x(\d+)""").find(line)
-                        val w = res?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
-                        val h = res?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 0
-                        val bw = Regex("""\bBANDWIDTH=(\d+)""").find(line)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
-                        val next = lines[i + 1].trim()
-                        if (next.isNotEmpty() && !next.startsWith("#")) {
-                            val resolvedUrl = baseHttp.resolve(next)?.toString() ?: next
-                            variants.add(Variant(w * h.toLong(), bw, h, resolvedUrl))
-                        }
-                    }
-                }
-                val best = variants.maxWithOrNull(compareBy<Variant>({ it.pixels }, { it.bw })) ?: return null
-                val label = when {
-                    best.height >= 1080 -> "1080p FHD"
-                    best.height >= 720 -> "720p HD"
-                    best.height > 0 -> "${best.height}p"
-                    else -> "MAX"
-                }
-                best.url to label
-            }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun pickPreferredSubLanguage(obj: JsonObject): String {
-        val variants = obj["variants"] as? JsonArray ?: return "jpn"
-        val nonIta = variants.mapNotNull { it as? JsonObject }
-            .mapNotNull { it.str("language")?.lowercase() }
-            .filter { it != "ita" }
-        return if ("jpn" in nonIta) "jpn" else (nonIta.firstOrNull() ?: "jpn")
-    }
-
-    private fun pickEpisodeVideo(videos: JsonArray, wantDub: Boolean): JsonObject? {
-        val objs = videos.mapNotNull { it as? JsonObject }
-        val visible = objs.filter { it.boolVal("is_hidden") != true }.ifEmpty { objs }
-        if (visible.isEmpty()) return null
-        if (wantDub) {
-            return visible.firstOrNull { it.str("language")?.lowercase() == "ita" }
-        }
-        val nonIta = visible.filter { it.str("language")?.lowercase() != "ita" }
-        return nonIta.firstOrNull { it.str("language")?.lowercase() == "jpn" } ?: nonIta.firstOrNull()
-    }
-
     internal fun parseAnimeVariants(obj: JsonObject): List<AnimeItem> {
-        val variants = (obj["variants"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
-        if (variants.isEmpty()) {
-            return listOf(parseSingleAnime(obj, variantLang = "jpn", forceDub = false))
-        }
-        val ita = variants.firstOrNull { it.str("language")?.lowercase() == "ita" }
-        val nonIta = variants.filter { it.str("language")?.lowercase() != "ita" }
-        val sub = nonIta.firstOrNull { it.str("language")?.lowercase() == "jpn" } ?: nonIta.firstOrNull()
-
-        val result = mutableListOf<AnimeItem>()
-        if (sub != null) {
-            result.add(
-                parseSingleAnime(
-                    obj = obj,
-                    variantLang = sub.str("language")?.lowercase() ?: "jpn",
-                    forceDub = false,
-                )
-            )
-        }
-        if (ita != null) {
-            result.add(
-                parseSingleAnime(
-                    obj = obj,
-                    variantLang = "ita",
-                    forceDub = true,
-                )
-            )
-        }
-        return result.ifEmpty { listOf(parseSingleAnime(obj, variantLang = "jpn", forceDub = false)) }
+        return AnimeUnityParser.parseAnimeVariants(obj)
     }
 
     internal fun parseSingleAnime(
@@ -974,94 +571,6 @@ class AnimeUnityClient(context: Context?) {
         latestEpNum: String? = null,
         latestVideoId: String? = null,
     ): AnimeItem {
-        val id = obj.str("id").orEmpty()
-        val slug = obj.str("slug").orEmpty()
-        val rawTitle = (obj.str("title") ?: obj.str("title_it") ?: obj.str("title_ja") ?: "Anime").trim()
-        val displayTitle = if (forceDub && "(ita)" !in rawTitle.lowercase()) "$rawTitle (ITA)" else rawTitle
-
-        val variants = (obj["variants"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
-        val hasDub = variants.any { it.str("language")?.lowercase() == "ita" } || forceDub
-        val hasSub = variants.any { it.str("language")?.lowercase() != "ita" } || !forceDub
-
-        val matchedVariant = variants.firstOrNull { it.str("language")?.lowercase() == variantLang }
-            ?: if (forceDub) {
-                variants.firstOrNull { it.str("language")?.lowercase() == "ita" }
-            } else {
-                variants.firstOrNull { it.str("language")?.lowercase() != "ita" }
-            }
-
-        val releasedCount = matchedVariant?.intVal("episodes_count")
-            ?: variants.mapNotNull { it.intVal("episodes_count") }.maxOrNull()
-            ?: obj.intVal("total_episodes")
-            ?: 0
-
-        val statusRaw = matchedVariant?.str("status") ?: obj.str("default_status") ?: obj.str("status")
-        val images = obj["images"] as? JsonObject
-        val genres = (obj["genres"] as? JsonArray)?.mapNotNull {
-            (it as? JsonObject)?.str("name")?.takeIf { n -> n.isNotBlank() }
-        }.orEmpty()
-        val studios = (obj["studios"] as? JsonArray)?.mapNotNull {
-            (it as? JsonObject)?.str("name")?.takeIf { n -> n.isNotBlank() }
-        }.orEmpty()
-
-        val rawType = obj.str("type")?.lowercase().orEmpty()
-        val rawSeason = obj.str("season")?.lowercase().orEmpty()
-
-        return AnimeItem(
-            id = id,
-            slug = slug,
-            title = displayTitle,
-            titleJa = obj.str("title_ja"),
-            titleIt = obj.str("title_it"),
-            type = TYPE_LABELS[rawType] ?: rawType.uppercase().ifEmpty { "TV" },
-            season = SEASON_LABELS[rawSeason] ?: rawSeason,
-            year = obj.intVal("year"),
-            totalEpisodes = obj.intVal("total_episodes")?.takeIf { it > 0 },
-            runtimeMinutes = obj.intVal("episode_runtime"),
-            status = mapStatus(statusRaw),
-            score = obj.str("score")?.takeIf { it.isNotBlank() && it != "0" },
-            views = obj.longVal("views") ?: 0L,
-            posterUrl = images?.str("poster"),
-            coverUrl = images?.str("cover"),
-            bannerUrl = images?.str("banner"),
-            plot = obj.str("plot").orEmpty(),
-            genres = genres,
-            studios = studios,
-            anilistId = obj.intVal("anilist_id") ?: 0,
-            malId = obj.intVal("mal_id") ?: 0,
-            isDub = forceDub,
-            audioLabel = if (forceDub) "Italiano" else (LANGUAGE_LABELS[variantLang] ?: variantLang.uppercase()),
-            releasedEpisodes = releasedCount,
-            latestEpisodeNum = latestEpNum,
-            latestVideoId = latestVideoId,
-            hasSubVariant = hasSub,
-            hasDubVariant = hasDub,
-        )
-    }
-
-    private fun JsonObject.str(key: String): String? {
-        val el = this[key] ?: return null
-        if (el is JsonNull) return null
-        return (el as? JsonPrimitive)?.content
-    }
-
-    private fun JsonObject.intVal(key: String): Int? {
-        val el = this[key] as? JsonPrimitive ?: return null
-        return el.intOrNull ?: el.content.toIntOrNull()
-    }
-
-    private fun JsonObject.longVal(key: String): Long? {
-        val el = this[key] as? JsonPrimitive ?: return null
-        return el.longOrNull ?: el.content.toLongOrNull()
-    }
-
-    private fun JsonObject.boolVal(key: String): Boolean? {
-        val el = this[key] as? JsonPrimitive ?: return null
-        return el.booleanOrNull
-    }
-
-    private fun JsonObject.doubleVal(key: String): Double? {
-        val el = this[key] as? JsonPrimitive ?: return null
-        return el.doubleOrNull ?: el.content.toDoubleOrNull()
+        return AnimeUnityParser.parseSingleAnime(obj, variantLang, forceDub, latestEpNum, latestVideoId)
     }
 }

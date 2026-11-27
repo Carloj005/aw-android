@@ -9,7 +9,9 @@ import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.carloj005.awanime.BuildConfig
 import com.carloj005.awanime.data.model.UpdateInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -106,10 +108,10 @@ class AppUpdater(private val context: Context) {
     }
 
     /**
-     * Scarica l'APK nella cache privata dell'app (`cacheDir/updates/`), verifica:
+     * Scarica l'APK nella cache privata dell'app (`cacheDir/updates/`), verifica fail-closed:
      * 1) Host HTTPS fidato GitHub
-     * 2) Checksum SHA-256 (se pubblicato nella Release)
-     * 3) PackageName e firma digitale del certificato APK coerenti con l'app attualmente installata
+     * 2) Checksum SHA-256 (obbligatorio e fail-closed se la release espone `.sha256`)
+     * 3) PackageName e certificato di firma digitale coerenti con l'app installata
      */
     suspend fun downloadUpdateApk(
         info: UpdateInfo,
@@ -119,7 +121,7 @@ class AppUpdater(private val context: Context) {
             throw SecurityException("URL aggiornamento non fidato")
         }
 
-        val expectedSha256 = info.sha256Url?.let { fetchExpectedSha256(it) }
+        val expectedSha256 = info.sha256Url?.let { fetchExpectedSha256OrThrow(it) }
 
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
         updatesDir.listFiles()?.forEach { it.delete() }
@@ -133,21 +135,22 @@ class AppUpdater(private val context: Context) {
             .header("User-Agent", "AW-Anime/${BuildConfig.VERSION_NAME}")
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IOException("Download aggiornamento fallito (HTTP ${resp.code})")
-            }
-            val body = resp.body ?: throw IOException("Corpo risposta vuoto")
-            val total = body.contentLength().takeIf { it > 0L } ?: info.sizeBytes
-            var downloaded = 0L
-            var lastEmit = 0L
-            val digest = MessageDigest.getInstance("SHA-256")
+        val call = httpClient.newCall(req)
+        try {
+            call.execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    throw IOException("Download aggiornamento fallito (HTTP ${resp.code})")
+                }
+                val body = resp.body ?: throw IOException("Corpo risposta vuoto")
+                val total = body.contentLength().takeIf { it > 0L } ?: info.sizeBytes
+                var downloaded = 0L
+                var lastEmit = 0L
+                val digest = MessageDigest.getInstance("SHA-256")
 
-            try {
                 body.byteStream().use { input ->
                     FileOutputStream(tempFile).use { output ->
                         val buf = ByteArray(64 * 1024)
-                        while (true) {
+                        while (isActive) {
                             val read = input.read(buf)
                             if (read == -1) break
                             output.write(buf, 0, read)
@@ -163,6 +166,7 @@ class AppUpdater(private val context: Context) {
                         output.flush()
                     }
                 }
+                if (!isActive) throw CancellationException("Download aggiornamento annullato")
 
                 // 1. Verifica integrità crittografica SHA-256
                 val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
@@ -174,7 +178,7 @@ class AppUpdater(private val context: Context) {
                     throw SecurityException("Verifica SHA-256 fallita: il file APK scaricato è corrotto o manomesso.")
                 }
 
-                // 2. Verifica packageName e certificato di firma APK prima ancora di aprire l'installer Android
+                // 2. Verifica fail-closed di packageName e certificato di firma APK
                 verifyApkMatchesInstalledSigner(tempFile)
 
                 if (!tempFile.renameTo(targetFile)) {
@@ -183,32 +187,40 @@ class AppUpdater(private val context: Context) {
                 }
                 onProgress(1f, targetFile.length(), targetFile.length())
                 targetFile
-            } catch (e: Exception) {
-                tempFile.delete()
-                targetFile.delete()
-                throw e
             }
+        } catch (e: Throwable) {
+            call.cancel()
+            tempFile.delete()
+            targetFile.delete()
+            throw e
         }
     }
 
-    private fun fetchExpectedSha256(sha256Url: String): String? {
-        if (!isTrustedGitHubDownloadUrl(sha256Url)) return null
-        return runCatching {
-            val req = Request.Builder()
-                .url(sha256Url)
-                .header("User-Agent", "AW-Anime/${BuildConfig.VERSION_NAME}")
-                .build()
-            httpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use null
-                parseSha256Line(resp.body?.string().orEmpty())
+    private fun fetchExpectedSha256OrThrow(sha256Url: String): String {
+        if (!isTrustedGitHubDownloadUrl(sha256Url)) {
+            throw SecurityException("URL checksum SHA-256 non fidato.")
+        }
+        val req = Request.Builder()
+            .url(sha256Url)
+            .header("User-Agent", "AW-Anime/${BuildConfig.VERSION_NAME}")
+            .build()
+        httpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                throw SecurityException("Impossibile scaricare il checksum SHA-256 della release (HTTP ${resp.code}).")
             }
-        }.getOrNull()
+            return parseSha256Line(resp.body?.string().orEmpty())
+                ?: throw SecurityException("File checksum SHA-256 della release malformato.")
+        }
     }
 
     @Suppress("DEPRECATION")
     private fun verifyApkMatchesInstalledSigner(apkFile: File) {
         val pm = context.packageManager
         val installedDigests = getInstalledSigningDigests(pm)
+        if (installedDigests.isEmpty()) {
+            throw SecurityException("Impossibile verificare la firma dell'app installata. Aggiornamento bloccato.")
+        }
+
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             PackageManager.GET_SIGNING_CERTIFICATES
         } else {
@@ -222,13 +234,15 @@ class AppUpdater(private val context: Context) {
         }
 
         val archiveDigests = extractSigningDigests(archiveInfo)
-        if (installedDigests.isNotEmpty() && archiveDigests.isNotEmpty()) {
-            val matches = archiveDigests.any { it in installedDigests }
-            if (!matches) {
-                throw SecurityException(
-                    "Firma digitale dell'APK non corrispondente all'app installata. Aggiornamento bloccato per sicurezza."
-                )
-            }
+        if (archiveDigests.isEmpty()) {
+            throw SecurityException("L'APK scaricato non contiene una firma digitale valida. Aggiornamento bloccato.")
+        }
+
+        val matches = archiveDigests.any { it in installedDigests }
+        if (!matches) {
+            throw SecurityException(
+                "Firma digitale dell'APK non corrispondente all'app installata. Aggiornamento bloccato per sicurezza."
+            )
         }
     }
 
@@ -262,9 +276,6 @@ class AppUpdater(private val context: Context) {
         }.toSet()
     }
 
-    /**
-     * Verifica se l'app ha il permesso "Installa app sconosciute".
-     */
     fun canInstallPackages(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.packageManager.canRequestPackageInstalls()
@@ -283,9 +294,6 @@ class AppUpdater(private val context: Context) {
         }
     }
 
-    /**
-     * Avvia l'installatore nativo Android sull'APK scaricato tramite FileProvider.
-     */
     fun launchApkInstaller(apkFile: File) {
         val uri = FileProvider.getUriForFile(
             context,
@@ -301,13 +309,15 @@ class AppUpdater(private val context: Context) {
     }
 
     companion object {
+        private val TRUSTED_GITHUB_HOSTS = setOf(
+            "api.github.com",
+            "github.com",
+            "objects.githubusercontent.com",
+            "release-assets.githubusercontent.com",
+        )
+
         fun isTrustedGitHubHost(rawHost: String): Boolean {
-            val host = rawHost.trim().lowercase()
-            return host == "api.github.com" ||
-                host == "github.com" ||
-                host == "objects.githubusercontent.com" ||
-                host == "release-assets.githubusercontent.com" ||
-                host.endsWith(".githubusercontent.com")
+            return rawHost.trim().lowercase() in TRUSTED_GITHUB_HOSTS
         }
 
         fun isTrustedGitHubDownloadUrl(rawUrl: String): Boolean {

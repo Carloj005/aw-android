@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -51,9 +52,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -64,6 +65,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.ThemeMode
@@ -74,10 +76,11 @@ import com.carloj005.awanime.ui.screens.DetailScreen
 import com.carloj005.awanime.ui.screens.DownloadsScreen
 import com.carloj005.awanime.ui.screens.HistoryScreen
 import com.carloj005.awanime.ui.screens.HomeScreen
-import com.carloj005.awanime.ui.screens.PipCommand
 import com.carloj005.awanime.ui.screens.PlayerScreen
 import com.carloj005.awanime.ui.screens.SearchScreen
+import com.carloj005.awanime.ui.screens.SettingsActions
 import com.carloj005.awanime.ui.screens.SettingsScreen
+import com.carloj005.awanime.ui.screens.player.PipCommand
 import com.carloj005.awanime.ui.theme.AWAnimeTheme
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -209,8 +212,8 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val vm: AppViewModel = viewModel()
-            val settings by vm.settings.collectAsState()
-            val activePlayer by vm.activePlayer.collectAsState()
+            val settings by vm.settings.collectAsStateWithLifecycle()
+            val activePlayer by vm.activePlayer.collectAsStateWithLifecycle()
             val isInPip by isInPipState
             var isPlayerPlaying by rememberSaveable { mutableStateOf(true) }
 
@@ -246,6 +249,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 AwAnimeRoot(
                     vm = vm,
+                    app = application as AwAnimeApp,
                     isInPipMode = isInPip,
                     pipCommands = pipCommands,
                     onPlayingStateChanged = { playing ->
@@ -268,6 +272,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AwAnimeRoot(
     vm: AppViewModel,
+    app: AwAnimeApp,
     isInPipMode: Boolean,
     pipCommands: SharedFlow<PipCommand>,
     onPlayingStateChanged: (Boolean) -> Unit,
@@ -276,32 +281,18 @@ private fun AwAnimeRoot(
     val context = LocalContext.current
     var selectedTab by rememberSaveable { mutableStateOf(BottomTab.HOME) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    val homeGridState = rememberLazyGridState()
 
-    val homeState by vm.homeState.collectAsState()
-    val searchState by vm.searchState.collectAsState()
-    val detailState by vm.detailState.collectAsState()
-    val history by vm.history.collectAsState()
-    val favorites by vm.favorites.collectAsState()
-    val downloads by vm.downloads.collectAsState()
-    val settings by vm.settings.collectAsState()
-    val activePlayer by vm.activePlayer.collectAsState()
-    val updateState by vm.updateState.collectAsState()
-    val settingsFeedback by vm.settingsFeedback.collectAsState()
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val activePlayer by vm.activePlayer.collectAsStateWithLifecycle()
+    val detailState by vm.detailState.collectAsStateWithLifecycle()
+    val updateState by vm.updateState.collectAsStateWithLifecycle()
 
     val exportBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                val payload = vm.buildBackupJson()
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(payload.toByteArray(Charsets.UTF_8))
-                }
-            }.onSuccess {
-                vm.setSettingsFeedback("Backup esportato con successo!")
-            }.onFailure { err ->
-                vm.setSettingsFeedback("Errore esportazione backup: ${err.message}")
-            }
+            vm.exportBackupToUri(context.contentResolver, uri)
         }
     }
 
@@ -309,25 +300,10 @@ private fun AwAnimeRoot(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { inp ->
-                    inp.bufferedReader(Charsets.UTF_8).readText()
-                }.orEmpty()
-            }.mapCatching { text ->
-                vm.importBackupJson(text).getOrThrow()
-            }.onSuccess { msg ->
-                vm.setSettingsFeedback(msg)
-            }.onFailure { err ->
-                vm.setSettingsFeedback("File backup non valido: ${err.message}")
-            }
+            vm.importBackupFromUri(context.contentResolver, uri)
         }
     }
 
-    val activeDownloadCount = downloads.count {
-        it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.QUEUED
-    }
-
-    // Dialogo Aggiornamento Automatico (GitHub Releases con verifica SHA-256 + Firma)
     if (updateState.showDialog && updateState.availableUpdate != null && activePlayer == null) {
         UpdateDialog(
             state = updateState,
@@ -336,12 +312,14 @@ private fun AwAnimeRoot(
         )
     }
 
-    // 1. Player Fullscreen / PiP
     if (activePlayer != null) {
         BackHandler { vm.closePlayer() }
         PlayerScreen(
             request = activePlayer!!,
             settings = settings,
+            client = app.animeUnityClient,
+            historyRepo = app.historyRepository,
+            downloadRepo = app.downloadRepository,
             isInPipMode = isInPipMode,
             pipCommands = pipCommands,
             onPlayingStateChanged = onPlayingStateChanged,
@@ -351,37 +329,48 @@ private fun AwAnimeRoot(
         return
     }
 
-    // 2. Schermata Impostazioni
     if (showSettings) {
         BackHandler { showSettings = false }
+        val settingsFeedback by vm.settingsFeedback.collectAsStateWithLifecycle()
+        val cacheBytes by vm.cacheSizeBytes.collectAsStateWithLifecycle()
+        val settingsActions = remember(vm, exportBackupLauncher, importBackupLauncher) {
+            SettingsActions(
+                onBack = { showSettings = false },
+                onThemeModeChange = { vm.setThemeMode(it) },
+                onDynamicColorsChange = { vm.setDynamicColors(it) },
+                onAutoSkipIntroChange = { vm.setAutoSkipIntro(it) },
+                onAutoSkipOutroChange = { vm.setAutoSkipOutro(it) },
+                onAutoPipChange = { vm.setAutoPipEnabled(it) },
+                onWifiOnlyDownloadsChange = { vm.setWifiOnlyDownloads(it) },
+                onAutoCheckUpdatesChange = { vm.setAutoCheckUpdates(it) },
+                onCheckUpdatesNow = { vm.checkForUpdates(manual = true) },
+                onOpenUpdateDialog = { vm.showUpdateDialog() },
+                onExportBackup = { exportBackupLauncher.launch("aw-anime-backup.json") },
+                onImportBackup = { importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                onRefreshCacheSize = { vm.refreshCacheSize() },
+                onClearCache = { vm.clearAppCache() },
+            )
+        }
         SettingsScreen(
             settings = settings,
             updateState = updateState,
+            cacheBytes = cacheBytes,
             feedbackMessage = settingsFeedback,
-            onBack = { showSettings = false },
-            onThemeModeChange = { vm.setThemeMode(it) },
-            onDynamicColorsChange = { vm.setDynamicColors(it) },
-            onAutoSkipIntroChange = { vm.setAutoSkipIntro(it) },
-            onAutoSkipOutroChange = { vm.setAutoSkipOutro(it) },
-            onAutoPipChange = { vm.setAutoPipEnabled(it) },
-            onWifiOnlyDownloadsChange = { vm.setWifiOnlyDownloads(it) },
-            onAutoCheckUpdatesChange = { vm.setAutoCheckUpdates(it) },
-            onCheckUpdatesNow = { vm.checkForUpdates(manual = true) },
-            onOpenUpdateDialog = { vm.showUpdateDialog() },
-            onExportBackup = { exportBackupLauncher.launch("aw-anime-backup.json") },
-            onImportBackup = { importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
-            onClearCache = { onDone -> vm.clearAppCache(context, onDone) },
+            actions = settingsActions,
         )
         return
     }
 
-    // 3. Scheda Anime Dettaglio
     if (detailState.anime != null) {
         BackHandler { vm.closeDetail() }
+        val history by vm.history.collectAsStateWithLifecycle()
+        val favorites by vm.favorites.collectAsStateWithLifecycle()
+        val downloads by vm.downloads.collectAsStateWithLifecycle()
         val histEntry = history.firstOrNull { it.uniqueKey == detailState.anime?.uniqueKey }
         val isFav = favorites.any { it.uniqueKey == detailState.anime?.uniqueKey }
         DetailScreen(
             state = detailState,
+            shareBaseUrl = vm.activeBaseUrl,
             historyEntry = histEntry,
             isFavorite = isFav,
             downloads = downloads,
@@ -390,37 +379,23 @@ private fun AwAnimeRoot(
             onToggleFavorite = { vm.toggleFavorite(it) },
             onSwitchLanguage = { vm.switchDetailLanguage(it) },
             onPlayEpisode = { anime, eps, idx -> vm.startPlayback(anime, eps, idx) },
-            onDownloadEpisode = { anime, ep -> vm.downloadRepo.enqueueDownload(anime, ep) },
+            onDownloadEpisode = { anime, ep -> vm.enqueueDownload(anime, ep) },
         )
         return
     }
 
-    // 4. Navigazione principale 4 tab Material You 3 Expressive
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-                BottomTab.entries.forEach { tab ->
-                    NavigationBarItem(
-                        selected = selectedTab == tab,
-                        onClick = { selectedTab = tab },
-                        icon = {
-                            if (tab == BottomTab.DOWNLOADS && activeDownloadCount > 0) {
-                                BadgedBox(
-                                    badge = {
-                                        Badge { Text(activeDownloadCount.toString()) }
-                                    }
-                                ) {
-                                    Icon(tab.icon, contentDescription = tab.label)
-                                }
-                            } else {
-                                Icon(tab.icon, contentDescription = tab.label)
-                            }
-                        },
-                        label = { Text(tab.label, fontWeight = FontWeight.SemiBold) },
-                    )
-                }
+            val downloads by vm.downloads.collectAsStateWithLifecycle()
+            val activeDownloadCount = downloads.count {
+                it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.QUEUED
             }
+            MainBottomNavigationBar(
+                selectedTab = selectedTab,
+                activeDownloadCount = activeDownloadCount,
+                onSelectTab = { selectedTab = it },
+            )
         },
     ) { innerPadding ->
         Box(
@@ -429,45 +404,91 @@ private fun AwAnimeRoot(
                 .padding(innerPadding),
         ) {
             when (selectedTab) {
-                BottomTab.HOME -> HomeScreen(
-                    state = homeState,
-                    history = history,
-                    favorites = favorites,
-                    hasUpdateAvailable = updateState.availableUpdate != null,
-                    onSelectFilter = { vm.loadHome(it) },
-                    onRefresh = { vm.loadHome(homeState.selectedFilter, forceRefresh = true) },
-                    onOpenSettings = { showSettings = true },
-                    onAnimeClick = { vm.openAnimeDetail(it) },
-                    onQuickWatch = { vm.quickWatchAnime(it) },
-                    onResumeHistory = { vm.resumeFromHistory(it) },
-                )
+                BottomTab.HOME -> {
+                    val homeState by vm.homeState.collectAsStateWithLifecycle()
+                    val history by vm.history.collectAsStateWithLifecycle()
+                    val favorites by vm.favorites.collectAsStateWithLifecycle()
+                    HomeScreen(
+                        state = homeState,
+                        history = history,
+                        favorites = favorites,
+                        hasUpdateAvailable = updateState.availableUpdate != null,
+                        onSelectFilter = { vm.loadHome(it) },
+                        onRefresh = { vm.loadHome(homeState.selectedFilter, forceRefresh = true) },
+                        onOpenSettings = { showSettings = true },
+                        onAnimeClick = { vm.openAnimeDetail(it) },
+                        onQuickWatch = { vm.quickWatchAnime(it) },
+                        onResumeHistory = { vm.resumeFromHistory(it) },
+                        gridState = homeGridState,
+                    )
+                }
 
-                BottomTab.SEARCH -> SearchScreen(
-                    state = searchState,
-                    onQueryChange = { vm.updateSearchQuery(it) },
-                    onFilterChange = { vm.setSearchFilter(it) },
-                    onSearchSubmit = { vm.performSearch(it) },
-                    onClearRecent = { vm.clearRecentQueries() },
-                    onAnimeClick = { vm.openAnimeDetail(it) },
-                )
+                BottomTab.SEARCH -> {
+                    val searchState by vm.searchState.collectAsStateWithLifecycle()
+                    SearchScreen(
+                        state = searchState,
+                        onQueryChange = { vm.updateSearchQuery(it) },
+                        onFilterChange = { vm.setSearchFilter(it) },
+                        onSearchSubmit = { vm.performSearch(it) },
+                        onClearRecent = { vm.clearRecentQueries() },
+                        onAnimeClick = { vm.openAnimeDetail(it) },
+                    )
+                }
 
-                BottomTab.LIBRARY -> HistoryScreen(
-                    history = history,
-                    favorites = favorites,
-                    onResume = { vm.resumeFromHistory(it) },
-                    onOpenDetail = { vm.openAnimeDetail(it) },
-                    onRemoveHistory = { vm.historyRepo.remove(it) },
-                    onRemoveFavorite = { vm.removeFavorite(it) },
-                )
+                BottomTab.LIBRARY -> {
+                    val history by vm.history.collectAsStateWithLifecycle()
+                    val favorites by vm.favorites.collectAsStateWithLifecycle()
+                    HistoryScreen(
+                        history = history,
+                        favorites = favorites,
+                        onResume = { vm.resumeFromHistory(it) },
+                        onOpenDetail = { vm.openAnimeDetail(it) },
+                        onRemoveHistory = { vm.removeHistoryEntry(it) },
+                        onRemoveFavorite = { vm.removeFavorite(it) },
+                    )
+                }
 
-                BottomTab.DOWNLOADS -> DownloadsScreen(
-                    downloads = downloads,
-                    onPlayOffline = { vm.playDownloadedEpisode(it) },
-                    onRetry = { vm.downloadRepo.retryDownload(it) },
-                    onCancel = { vm.downloadRepo.cancelDownload(it) },
-                    onDelete = { vm.downloadRepo.deleteDownload(it) },
-                )
+                BottomTab.DOWNLOADS -> {
+                    val downloads by vm.downloads.collectAsStateWithLifecycle()
+                    DownloadsScreen(
+                        downloads = downloads,
+                        onPlayOffline = { vm.playDownloadedEpisode(it) },
+                        onRetry = { vm.retryDownload(it) },
+                        onCancel = { vm.cancelDownload(it) },
+                        onDelete = { vm.deleteDownload(it) },
+                    )
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun MainBottomNavigationBar(
+    selectedTab: BottomTab,
+    activeDownloadCount: Int,
+    onSelectTab: (BottomTab) -> Unit,
+) {
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+        BottomTab.entries.forEach { tab ->
+            NavigationBarItem(
+                selected = selectedTab == tab,
+                onClick = { onSelectTab(tab) },
+                icon = {
+                    if (tab == BottomTab.DOWNLOADS && activeDownloadCount > 0) {
+                        BadgedBox(
+                            badge = {
+                                Badge { Text(activeDownloadCount.toString()) }
+                            }
+                        ) {
+                            Icon(tab.icon, contentDescription = tab.label)
+                        }
+                    } else {
+                        Icon(tab.icon, contentDescription = tab.label)
+                    }
+                },
+                label = { Text(tab.label, fontWeight = FontWeight.SemiBold) },
+            )
         }
     }
 }

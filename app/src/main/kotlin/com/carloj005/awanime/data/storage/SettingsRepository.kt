@@ -2,42 +2,56 @@ package com.carloj005.awanime.data.storage
 
 import android.content.Context
 import com.carloj005.awanime.data.model.AppSettings
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.io.File
 
-class SettingsRepository(context: Context) {
+class SettingsRepository internal constructor(
+    private val store: JsonFileStore<AppSettings>,
+    loadSynchronously: Boolean = false,
+) {
+    constructor(context: Context) : this(
+        store = JsonFileStore(File(context.filesDir, "settings.json"), AppSettings.serializer()),
+        loadSynchronously = false,
+    )
 
-    private val file = File(context.filesDir, "settings.json")
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
     private val lock = Any()
+    private var hasLocalMutation = false
+    private val initialLoad = CompletableDeferred<Unit>()
 
-    private val _settings = MutableStateFlow(readFromDisk())
+    private val _settings = MutableStateFlow(AppSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
 
-    private fun readFromDisk(): AppSettings = synchronized(lock) {
-        if (!file.exists()) return AppSettings()
-        return runCatching {
-            json.decodeFromString<AppSettings>(file.readText(Charsets.UTF_8))
-        }.getOrDefault(AppSettings())
+    init {
+        if (loadSynchronously) {
+            _settings.value = store.readBlocking(AppSettings())
+            initialLoad.complete(Unit)
+        } else {
+            store.loadAsync(AppSettings()) { disk ->
+                synchronized(lock) {
+                    if (!hasLocalMutation) {
+                        _settings.value = disk
+                    }
+                }
+                initialLoad.complete(Unit)
+            }
+        }
+    }
+
+    suspend fun awaitLoaded() {
+        initialLoad.await()
     }
 
     fun update(transform: (AppSettings) -> AppSettings) {
         val next = synchronized(lock) {
+            hasLocalMutation = true
             val updated = transform(_settings.value)
-            val payload = json.encodeToString(updated)
-            val tmp = File(file.parentFile, "${file.name}.tmp")
-            tmp.writeText(payload, Charsets.UTF_8)
-            if (!tmp.renameTo(file)) {
-                file.writeText(payload, Charsets.UTF_8)
-                tmp.delete()
-            }
+            _settings.value = updated
             updated
         }
-        _settings.value = next
+        store.writeAsync(next)
     }
 
     fun replace(newSettings: AppSettings) {

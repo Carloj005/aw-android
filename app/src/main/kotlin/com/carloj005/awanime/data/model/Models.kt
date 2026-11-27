@@ -1,6 +1,7 @@
 package com.carloj005.awanime.data.model
 
 import kotlinx.serialization.Serializable
+import java.util.Locale
 
 @Serializable
 enum class LatestFilter(val label: String) {
@@ -207,12 +208,35 @@ data class UpdateInfo(
 
 @Serializable
 data class AppBackupData(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = CURRENT_SCHEMA_VERSION,
     val exportedAt: Long = System.currentTimeMillis(),
     val settings: AppSettings = AppSettings(),
     val history: List<WatchHistoryEntry> = emptyList(),
     val favorites: List<AnimeItem> = emptyList(),
-)
+) {
+    companion object {
+        const val CURRENT_SCHEMA_VERSION = 1
+    }
+}
+
+/**
+ * Calcola l'indice dell'episodio da riprodurre/riprendere in base alla cronologia:
+ * - Se l'ultimo episodio visto è completato e ne esiste uno successivo, avanza al successivo.
+ * - Altrimenti riparte dall'episodio corrente (o da 0 se non trovato / lista vuota).
+ */
+fun resolveNextEpisodeIndex(
+    episodes: List<EpisodeItem>,
+    historyEntry: WatchHistoryEntry?,
+): Int {
+    if (episodes.isEmpty() || historyEntry == null) return 0
+    val currentIdx = episodes.indexOfFirst { it.number == historyEntry.currentEpisodeNum }
+    if (currentIdx < 0) return 0
+    return if (historyEntry.completed && currentIdx + 1 < episodes.size) {
+        currentIdx + 1
+    } else {
+        currentIdx
+    }
+}
 
 fun formatTimeMs(ms: Long): String {
     val totalSeconds = (ms / 1000L).coerceAtLeast(0L)
@@ -220,9 +244,9 @@ fun formatTimeMs(ms: Long): String {
     val minutes = (totalSeconds % 3600L) / 60L
     val seconds = totalSeconds % 60L
     return if (hours > 0L) {
-        String.format("%d:%02d:%02d", hours, minutes, seconds)
+        String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
     } else {
-        String.format("%02d:%02d", minutes, seconds)
+        String.format(Locale.ROOT, "%02d:%02d", minutes, seconds)
     }
 }
 
@@ -230,8 +254,8 @@ fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "0 MB"
     val mb = bytes.toDouble() / (1024.0 * 1024.0)
     return if (mb >= 1024.0) {
-        String.format("%.2f GB", mb / 1024.0)
+        String.format(Locale.ROOT, "%.2f GB", mb / 1024.0)
     } else {
-        String.format("%.1f MB", mb)
+        String.format(Locale.ROOT, "%.1f MB", mb)
     }
 }

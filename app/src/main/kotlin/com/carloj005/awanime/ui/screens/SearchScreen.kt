@@ -175,10 +175,11 @@ fun SearchScreen(
             }
 
             state.hasSearched && filteredResults.isEmpty() -> {
+                val displayedQuery = state.submittedQuery.ifBlank { state.query }
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
                         text = if (state.results.isEmpty()) {
-                            "Nessun risultato trovato per \"${state.query}\""
+                            "Nessun risultato trovato per \"$displayedQuery\""
                         } else {
                             "Nessun risultato con il filtro \"${state.filter.label}\""
                         },

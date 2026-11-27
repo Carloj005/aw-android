@@ -22,26 +22,22 @@ import java.util.concurrent.TimeUnit
  * Custom OkHttp DNS con:
  * - Fallback trasparente DNS-over-HTTPS (Cloudflare / Google) contro blocchi ISP
  * - Cache con TTL (10 minuti) per evitare IP stantii dopo rotazione CDN
- * - Protezione anti-SSRF / anti-DNS-rebinding su IPv4 e IPv6 (blocca loopback, privati, link-local, ULA, CGNAT)
+ * - Protezione anti-SSRF / anti-DNS-rebinding su IPv4 e IPv6 (loopback, privati,
+ *   link-local, ULA, CGNAT, IPv4-mapped/compatible, NAT64, multicast e documentazione)
  */
 class DohFallbackDns : Dns {
     private data class CachedEntry(val addresses: List<InetAddress>, val expiresAtMs: Long)
 
     private val cache = ConcurrentHashMap<String, CachedEntry>()
     private val json = Json { ignoreUnknownKeys = true }
+
+    // Usa intenzionalmente Dns.SYSTEM per evitare ricorsione DNS durante il lookup DoH.
     private val dohClient = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(4, TimeUnit.SECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
         .build()
-
-    private val targetKeywords = listOf(
-        "animeunity.",
-        "vixcloud.",
-        "vix-content.",
-        "vixsrc.",
-    )
 
     private val dohEndpoints = listOf(
         "https://cloudflare-dns.com/dns-query",
@@ -51,7 +47,7 @@ class DohFallbackDns : Dns {
 
     override fun lookup(hostname: String): List<InetAddress> {
         val lower = hostname.trim().lowercase()
-        val isTarget = targetKeywords.any { it in lower }
+        val isTarget = isTargetHostname(lower)
         val now = System.currentTimeMillis()
 
         if (isTarget) {
@@ -120,6 +116,12 @@ class DohFallbackDns : Dns {
     companion object {
         private const val CACHE_TTL_MS = 10 * 60 * 1000L
         private val SAFE_HOSTNAME_REGEX = Regex("""^[a-z0-9.-]{1,253}$""")
+        private val TARGET_HOST_REGEX =
+            Regex("""^(?:[a-z0-9-]+\.)*(?:animeunity|vixcloud|vix-content|vixsrc)\.[a-z]{2,10}$""")
+
+        fun isTargetHostname(hostname: String): Boolean {
+            return TARGET_HOST_REGEX.matches(hostname.trim().lowercase())
+        }
 
         fun isGlobalPublicAddress(addr: InetAddress): Boolean {
             return when (addr) {
@@ -154,13 +156,44 @@ class DohFallbackDns : Dns {
             val b = addr.address
             val b0 = b[0].toInt() and 0xFF
             val b1 = b[1].toInt() and 0xFF
-            // Blocca Unique Local Address (fc00::/7) e IPv4-mapped privati
+            val b2 = b[2].toInt() and 0xFF
+            val b3 = b[3].toInt() and 0xFF
+
+            // Blocca Unique Local Address (fc00::/7)
             if ((b0 and 0xFE) == 0xFC) return false
             // Blocca documentation prefix 2001:db8::/32
-            if (b0 == 0x20 && b1 == 0x01 && (b[2].toInt() and 0xFF) == 0x0D && (b[3].toInt() and 0xFF) == 0xB8) {
+            if (b0 == 0x20 && b1 == 0x01 && b2 == 0x0D && b3 == 0xB8) return false
+            // Blocca discard prefix 100::/64
+            if (b0 == 0x01 && b1 == 0x00 && (2..7).all { b[it].toInt() == 0 }) return false
+            // Blocca IPv4-compatible IPv6 (::/96)
+            if ((0..11).all { b[it].toInt() == 0 }) return false
+            // Verifica IPv4-mapped IPv6 (::ffff:0:0/96) contro regole IPv4 pubbliche
+            if ((0..9).all { b[it].toInt() == 0 } &&
+                (b[10].toInt() and 0xFF) == 0xFF &&
+                (b[11].toInt() and 0xFF) == 0xFF
+            ) {
+                return isEmbeddedIpv4Public(b)
+            }
+            // Blocca NAT64 local-use (64:ff9b:1::/48)
+            if (b0 == 0x00 && b1 == 0x64 && b2 == 0xFF && b3 == 0x9B &&
+                b[4].toInt() == 0 && (b[5].toInt() and 0xFF) == 0x01
+            ) {
                 return false
             }
+            // Verifica NAT64 well-known prefix (64:ff9b::/96) contro regole IPv4 pubbliche
+            if (b0 == 0x00 && b1 == 0x64 && b2 == 0xFF && b3 == 0x9B &&
+                (4..11).all { b[it].toInt() == 0 }
+            ) {
+                return isEmbeddedIpv4Public(b)
+            }
             return true
+        }
+
+        private fun isEmbeddedIpv4Public(ipv6Bytes: ByteArray): Boolean {
+            val embedded = runCatching {
+                InetAddress.getByAddress(ipv6Bytes.copyOfRange(12, 16)) as? Inet4Address
+            }.getOrNull() ?: return false
+            return isGlobalPublicIpv4(embedded)
         }
     }
 }

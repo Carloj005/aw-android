@@ -2,41 +2,64 @@ package com.carloj005.awanime.data.storage
 
 import android.content.Context
 import com.carloj005.awanime.data.model.AnimeItem
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 import java.io.File
 
-class FavoritesRepository(context: Context) {
+class FavoritesRepository internal constructor(
+    private val store: JsonFileStore<List<AnimeItem>>,
+    loadSynchronously: Boolean = false,
+) {
+    constructor(context: Context) : this(
+        store = JsonFileStore(
+            file = File(context.filesDir, "favorites.json"),
+            serializer = ListSerializer(AnimeItem.serializer()),
+        ),
+        loadSynchronously = false,
+    )
 
-    private val file = File(context.filesDir, "favorites.json")
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
     private val lock = Any()
+    private val removedBeforeLoad = mutableSetOf<String>()
+    private var initialLoadCompleted = false
+    private val initialLoad = CompletableDeferred<Unit>()
 
     private val _favorites = MutableStateFlow<List<AnimeItem>>(emptyList())
     val favorites: StateFlow<List<AnimeItem>> = _favorites.asStateFlow()
 
     init {
-        _favorites.value = readFromDisk()
-    }
-
-    private fun readFromDisk(): List<AnimeItem> = synchronized(lock) {
-        if (!file.exists()) return emptyList()
-        return runCatching {
-            json.decodeFromString<List<AnimeItem>>(file.readText(Charsets.UTF_8))
-        }.getOrDefault(emptyList())
-    }
-
-    private fun writeToDisk(list: List<AnimeItem>) = synchronized(lock) {
-        val payload = json.encodeToString(list)
-        val tmp = File(file.parentFile, "${file.name}.tmp")
-        tmp.writeText(payload, Charsets.UTF_8)
-        if (!tmp.renameTo(file)) {
-            file.writeText(payload, Charsets.UTF_8)
-            tmp.delete()
+        if (loadSynchronously) {
+            _favorites.value = store.readBlocking(emptyList())
+            initialLoadCompleted = true
+            initialLoad.complete(Unit)
+        } else {
+            store.loadAsync(emptyList()) { disk ->
+                val merged = synchronized(lock) {
+                    initialLoadCompleted = true
+                    val byKey = LinkedHashMap<String, AnimeItem>()
+                    for (item in _favorites.value) byKey[item.uniqueKey] = item
+                    for (item in disk) {
+                        if (item.uniqueKey !in removedBeforeLoad) {
+                            byKey.putIfAbsent(item.uniqueKey, item)
+                        }
+                    }
+                    removedBeforeLoad.clear()
+                    val list = byKey.values.toList()
+                    _favorites.value = list
+                    list
+                }
+                if (merged.size != disk.size) {
+                    store.writeAsync(merged)
+                }
+                initialLoad.complete(Unit)
+            }
         }
+    }
+
+    suspend fun awaitLoaded() {
+        initialLoad.await()
     }
 
     fun isFavorite(uniqueKey: String): Boolean {
@@ -50,25 +73,29 @@ class FavoritesRepository(context: Context) {
             val idx = current.indexOfFirst { it.uniqueKey == anime.uniqueKey }
             if (idx >= 0) {
                 current.removeAt(idx)
+                if (!initialLoadCompleted) removedBeforeLoad.add(anime.uniqueKey)
                 added = false
             } else {
+                removedBeforeLoad.remove(anime.uniqueKey)
                 current.add(0, anime)
                 added = true
             }
-            writeToDisk(current)
-            current.toList()
+            val list = current.toList()
+            _favorites.value = list
+            list
         }
-        _favorites.value = updated
+        store.writeAsync(updated)
         return added
     }
 
     fun remove(uniqueKey: String) {
         val updated = synchronized(lock) {
+            if (!initialLoadCompleted) removedBeforeLoad.add(uniqueKey)
             val next = _favorites.value.filterNot { it.uniqueKey == uniqueKey }
-            writeToDisk(next)
+            _favorites.value = next
             next
         }
-        _favorites.value = updated
+        store.writeAsync(updated)
     }
 
     fun mergeImport(imported: List<AnimeItem>) {
@@ -76,11 +103,14 @@ class FavoritesRepository(context: Context) {
         val updated = synchronized(lock) {
             val byKey = LinkedHashMap<String, AnimeItem>()
             for (item in _favorites.value) byKey[item.uniqueKey] = item
-            for (item in imported) byKey.putIfAbsent(item.uniqueKey, item)
+            for (item in imported) {
+                removedBeforeLoad.remove(item.uniqueKey)
+                byKey.putIfAbsent(item.uniqueKey, item)
+            }
             val list = byKey.values.toList()
-            writeToDisk(list)
+            _favorites.value = list
             list
         }
-        _favorites.value = updated
+        store.writeAsync(updated)
     }
 }
