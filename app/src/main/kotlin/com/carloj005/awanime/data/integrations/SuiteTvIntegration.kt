@@ -831,8 +831,9 @@ object SuiteTvIntegration {
         val results = mutableListOf<SuiteTvImportedShow>()
         showsText?.let { results.addAll(parseSuiteTvShowsNdjson(it)) }
         moviesText?.let { results.addAll(parseSuiteTvMoviesNdjson(it)) }
-        if (results.isEmpty() && !fallbackJsonText.isNullOrBlank()) {
-            results.addAll(parseImportedSuiteTvJson(fallbackJsonText!!))
+        val fallback = fallbackJsonText
+        if (results.isEmpty() && !fallback.isNullOrBlank()) {
+            results.addAll(parseImportedSuiteTvJson(fallback))
         }
         return results
     }

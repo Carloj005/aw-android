@@ -42,6 +42,7 @@ import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.model.resolveResumeTarget
 import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.data.network.OfflineException
+import com.carloj005.awanime.data.network.RateLimitedException
 import com.carloj005.awanime.data.network.SearchUtils
 import com.carloj005.awanime.data.notifications.FavoriteEpisodeNotificationManager
 import com.carloj005.awanime.data.notifications.SequelTracker
@@ -1212,7 +1213,7 @@ class AppViewModel(
                     val rawBytes = readBoundedBytes(contentResolver, uri, MAX_SUITETV_IMPORT_BYTES)
                     val importedRows = SuiteTvIntegration.parseImportedSuiteTvBytes(rawBytes)
                     if (importedRows.isEmpty()) {
-                        return@runCatchingCancellable IntArray(4) // [shows, eps, favs, skipped]
+                        return@runCatchingCancellable IntArray(5) // [shows, eps, favs, skipped, rateLimited]
                     }
 
                     val localPool = (favorites.value + history.value.map { it.anime })
@@ -1234,32 +1235,26 @@ class AppViewModel(
 
                     val groups = grouped.values.take(MAX_SUITETV_IMPORT_GROUPS)
                     val totalGroups = groups.size
-                    val processedCount = AtomicInteger(0)
-                    val semaphore = Semaphore(4)
-
-                    val mergedHistory = java.util.Collections.synchronizedList(mutableListOf<WatchHistoryEntry>())
-                    val mergedFavorites = java.util.Collections.synchronizedList(mutableListOf<AnimeItem>())
-                    val matchedShowsCount = AtomicInteger(0)
-                    val matchedEpisodesCount = AtomicInteger(0)
                     val skippedNonAnimeOrMissing = AtomicInteger(0)
 
-                    coroutineScope {
-                        groups.map { showGroup ->
+                    // Phase 1: Fast parallel non-anime pre-filter via ARM v2 (zero calls to AnimeUnity!)
+                    val prefilterDone = AtomicInteger(0)
+                    val armSemaphore = Semaphore(4)
+                    val animeGroupsToSync = coroutineScope {
+                        groups.mapIndexed { orderIdx, showGroup ->
                             async {
-                                semaphore.withPermit {
+                                armSemaphore.withPermit {
                                     val first = showGroup.first()
                                     val cleanShowTitle = SuiteTvIntegration.cleanTitleForSuiteTv(first.title)
                                         .ifBlank { first.title.trim() }
-
-                                    val doneIdx = processedCount.incrementAndGet()
-                                    _suiteTvSyncProgress.value = "Sincronizzo Suite TV ($doneIdx/$totalGroups): $cleanShowTitle"
+                                    val doneIdx = prefilterDone.incrementAndGet()
+                                    _suiteTvSyncProgress.value = "Analisi catalogo Suite TV ($doneIdx/$totalGroups)..."
 
                                     if (cleanShowTitle.length < 2) {
                                         skippedNonAnimeOrMissing.incrementAndGet()
-                                        return@withPermit
+                                        return@withPermit null
                                     }
 
-                                    // 1. Instant non-anime filter & exact ID lookup via ARM v2
                                     val armMappings: List<ArmSeasonMapping> = when {
                                         !first.isMovie && first.tvdbId != null -> {
                                             SuiteTvIntegration.resolveArmByTvdbId(thirdPartyHttpClient, first.tvdbId)
@@ -1269,172 +1264,260 @@ class AppViewModel(
                                         }
                                         else -> emptyList()
                                     }
-                                    // If we have an official TVDB/TMDB ID from Suite TV and ARM has zero anime mappings,
-                                    // it is a live-action TV show or Western movie (e.g. Breaking Bad) -> skip fast!
+                                    // Official TVDB/TMDB ID with zero ARM anime mappings -> live-action show/Western movie
                                     val hasExternalId = (!first.isMovie && first.tvdbId != null) ||
                                         (first.isMovie && first.tmdbId != null)
                                     if (hasExternalId && armMappings.isEmpty()) {
                                         skippedNonAnimeOrMissing.incrementAndGet()
-                                        return@withPermit
+                                        return@withPermit null
                                     }
-
-                                    // 2. Fetch AnimeUnity candidates once for the entire franchise
-                                    val fKey = SearchUtils.extractFranchiseKey(cleanShowTitle)
-                                    val prefersDub = userFranchiseProfiles[fKey]?.let { it.prefersDub && !it.prefersSub } ?: false
-                                    val localMatches = localPool.filter { cand ->
-                                        SearchUtils.scoreQueryAgainstTitles(
-                                            cleanShowTitle,
-                                            listOf(SuiteTvIntegration.cleanTitleForSuiteTv(cand.title), cand.title, cand.titleIt),
-                                        ) >= 0.80
-                                    }
-                                    val remoteMatches = runCatchingCancellable { client.search(cleanShowTitle) }
-                                        .getOrDefault(emptyList())
-                                    val allCandidates = (localMatches + remoteMatches)
-                                        .distinctBy { it.uniqueKey }
-                                    if (allCandidates.isEmpty()) {
-                                        skippedNonAnimeOrMissing.incrementAndGet()
-                                        return@withPermit
-                                    }
-
-                                    // 3. Match seasons to AnimeUnity entries (exact AniList/MAL IDs first, then title/season)
-                                    val sortedSeasons = showGroup.sortedBy { it.seasonNumber }
-                                    var anySeasonMatched = false
-
-                                    // Check continuous single-entry anime (e.g. Yu-Gi-Oh! S1..S5 -> single 224-ep AnimeUnity series)
-                                    val distinctMainlineArmIds = armMappings
-                                        .filter { !it.media.equals("OVA", ignoreCase = true) && !it.media.equals("SPECIAL", ignoreCase = true) }
-                                        .mapNotNull { it.anilistId ?: it.malId }
-                                        .toSet()
-                                    val singleContinuousTarget = if (!first.isMovie && sortedSeasons.size > 1 && distinctMainlineArmIds.size <= 1) {
-                                        resolveCandidatesForSeason(
-                                            seasonNumber = 1,
-                                            isMovie = false,
-                                            cleanShowTitle = cleanShowTitle,
-                                            armMappings = armMappings,
-                                            allCandidates = allCandidates,
-                                            prefersDub = prefersDub,
-                                        ).singleOrNull()
-                                    } else {
-                                        null
-                                    }
-
-                                    if (singleContinuousTarget != null) {
-                                        val episodes = runCatchingCancellable {
-                                            client.getEpisodes(singleContinuousTarget.id, singleContinuousTarget.isDub)
-                                        }.getOrDefault(emptyList())
-                                        val totalWatchedFlat = sortedSeasons.sumOf { it.watchedEpisodes.size }
-                                        if (episodes.size >= totalWatchedFlat && totalWatchedFlat > 0) {
-                                            val flatTimestamps = sortedSeasons.flatMap { s ->
-                                                s.watchedEpisodes.sorted().map { epNum ->
-                                                    s.episodeTimestampsMs[epNum] ?: s.lastWatchedAtMs
-                                                }
-                                            }
-                                            val entry = buildHistoryEntryFromSequentialCount(
-                                                anime = singleContinuousTarget,
-                                                episodes = episodes,
-                                                watchedTimestamps = flatTimestamps,
-                                            )
-                                            if (entry != null) {
-                                                mergedHistory.add(entry)
-                                                matchedEpisodesCount.addAndGet(entry.episodesProgress.size)
-                                                anySeasonMatched = true
-                                                if (first.isFavorite || first.isWatchlisted) {
-                                                    mergedFavorites.add(singleContinuousTarget)
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if (!anySeasonMatched) {
-                                        for (seasonRow in sortedSeasons) {
-                                            val matchedCours = resolveCandidatesForSeason(
-                                                seasonNumber = seasonRow.seasonNumber,
-                                                isMovie = seasonRow.isMovie,
-                                                cleanShowTitle = cleanShowTitle,
-                                                armMappings = armMappings,
-                                                allCandidates = allCandidates,
-                                                prefersDub = prefersDub,
-                                            )
-                                            if (matchedCours.isEmpty()) continue
-
-                                            if (seasonRow.watchedEpisodes.isEmpty()) {
-                                                if (seasonRow.isFavorite || seasonRow.isWatchlisted) {
-                                                    mergedFavorites.add(matchedCours.first())
-                                                    anySeasonMatched = true
-                                                }
-                                                continue
-                                            }
-
-                                            var epOffset = 0
-                                            for (courAnime in matchedCours) {
-                                                val episodes = runCatchingCancellable {
-                                                    client.getEpisodes(courAnime.id, courAnime.isDub)
-                                                }.getOrDefault(emptyList())
-                                                if (episodes.isEmpty()) continue
-
-                                                val epMap = linkedMapOf<String, EpisodeProgress>()
-                                                var latestWatchedEp: EpisodeItem? = null
-                                                var latestTs = seasonRow.lastWatchedAtMs
-
-                                                for (ep in episodes) {
-                                                    val epInt = ep.number.trim().split(".", "-").firstOrNull()?.toIntOrNull()
-                                                        ?: continue
-                                                    val targetSeasonEp = epOffset + epInt
-                                                    val matchedNum = when {
-                                                        targetSeasonEp in seasonRow.watchedEpisodes -> targetSeasonEp
-                                                        matchedCours.size == 1 && epInt in seasonRow.watchedEpisodes -> epInt
-                                                        else -> null
-                                                    } ?: continue
-
-                                                    val ts = seasonRow.episodeTimestampsMs[matchedNum] ?: seasonRow.lastWatchedAtMs
-                                                    epMap[ep.number] = EpisodeProgress(
-                                                        episodeNum = ep.number,
-                                                        videoId = ep.videoId,
-                                                        positionMs = 0L,
-                                                        durationMs = ep.runtimeSeconds.toLong().coerceAtLeast(1L) * 1000L,
-                                                        completed = true,
-                                                        updatedAt = ts,
-                                                    )
-                                                    latestWatchedEp = ep
-                                                    if (ts > latestTs) latestTs = ts
-                                                }
-
-                                                epOffset += episodes.size
-                                                if (epMap.isNotEmpty() && latestWatchedEp != null) {
-                                                    val atLatest = episodes.lastOrNull()?.number == latestWatchedEp.number
-                                                    mergedHistory.add(
-                                                        WatchHistoryEntry(
-                                                            anime = courAnime.copy(
-                                                                releasedEpisodes = maxOf(courAnime.releasedEpisodes, episodes.size),
-                                                            ),
-                                                            currentEpisodeNum = latestWatchedEp.number,
-                                                            currentVideoId = latestWatchedEp.videoId,
-                                                            progressMs = 0L,
-                                                            durationMs = latestWatchedEp.runtimeSeconds.toLong().coerceAtLeast(1L) * 1000L,
-                                                            completed = true,
-                                                            isAtLatestEpisode = atLatest,
-                                                            updatedAt = latestTs,
-                                                            episodesProgress = epMap,
-                                                        )
-                                                    )
-                                                    matchedEpisodesCount.addAndGet(epMap.size)
-                                                    anySeasonMatched = true
-                                                    if (seasonRow.isFavorite || seasonRow.isWatchlisted) {
-                                                        mergedFavorites.add(courAnime)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if (anySeasonMatched) {
-                                        matchedShowsCount.incrementAndGet()
-                                    } else {
-                                        skippedNonAnimeOrMissing.incrementAndGet()
-                                    }
+                                    Triple(orderIdx, showGroup, armMappings)
                                 }
                             }
                         }.awaitAll()
+                            .filterNotNull()
+                            .sortedBy { it.first }
+                    }
+
+                    // Phase 2: Polite sequential AnimeUnity lookup (1 request per anime, throttled, zero getEpisodes(), circuit-breaker on 403/429)
+                    val mergedHistory = mutableListOf<WatchHistoryEntry>()
+                    val mergedFavorites = mutableListOf<AnimeItem>()
+                    val syncedFavoriteKeys = mutableSetOf<String>()
+                    var matchedShowsCount = 0
+                    var matchedEpisodesCount = 0
+                    var remoteCallsMade = 0
+                    var rateLimited = false
+                    val totalAnime = animeGroupsToSync.size
+
+                    for ((syncIdx, triple) in animeGroupsToSync.withIndex()) {
+                        val (_, showGroup, armMappings) = triple
+                        val first = showGroup.first()
+                        val cleanShowTitle = SuiteTvIntegration.cleanTitleForSuiteTv(first.title)
+                            .ifBlank { first.title.trim() }
+                        _suiteTvSyncProgress.value = "Importazione anime (${syncIdx + 1}/$totalAnime): $cleanShowTitle"
+
+                        val fKey = SearchUtils.extractFranchiseKey(cleanShowTitle)
+                        val prefersDub = userFranchiseProfiles[fKey]?.let { it.prefersDub && !it.prefersSub } ?: false
+                        val sortedSeasons = showGroup.sortedBy { it.seasonNumber }
+                        val totalWatchedFlat = sortedSeasons.sumOf { it.watchedEpisodes.size }
+
+                        val localMatches = localPool.filter { cand ->
+                            SearchUtils.scoreQueryAgainstTitles(
+                                cleanShowTitle,
+                                listOf(SuiteTvIntegration.cleanTitleForSuiteTv(cand.title), cand.title, cand.titleIt),
+                            ) >= 0.80
+                        }
+                        val localDistinctIds = localMatches.distinctBy { it.id }
+                        val localHasCompleteMeta = localMatches.isNotEmpty() && localMatches.all {
+                            !it.displayImageUrl.isNullOrBlank() && maxOf(it.releasedEpisodes, it.totalEpisodes ?: 0) > 0
+                        }
+                        val canUseLocalOnly = localHasCompleteMeta && (
+                            first.isMovie ||
+                                sortedSeasons.size <= 1 ||
+                                localDistinctIds.size >= sortedSeasons.size ||
+                                (
+                                    localDistinctIds.size == 1 &&
+                                        maxOf(
+                                            localDistinctIds[0].releasedEpisodes,
+                                            localDistinctIds[0].totalEpisodes ?: 0,
+                                        ) >= totalWatchedFlat
+                                    )
+                            )
+
+                        val remoteMatches: List<AnimeItem> = if (canUseLocalOnly) {
+                            emptyList()
+                        } else {
+                            if (remoteCallsMade > 0) {
+                                delay(450L)
+                            }
+                            remoteCallsMade++
+                            try {
+                                client.searchArchiveQuick(cleanShowTitle)
+                            } catch (_: RateLimitedException) {
+                                rateLimited = true
+                                break
+                            } catch (_: IOException) {
+                                emptyList()
+                            }
+                        }
+
+                        val allCandidates = (localMatches + remoteMatches)
+                            .distinctBy { it.uniqueKey }
+                        if (allCandidates.isEmpty()) {
+                            skippedNonAnimeOrMissing.incrementAndGet()
+                            continue
+                        }
+
+                        var anySeasonMatched = false
+
+                        // Filter out MOVIE/OVA/SPECIAL and season 0 from TV ARM entries so continuous series flatten properly
+                        val tvArmMappings = armMappings.filter {
+                            it.tvdbSeason != 0 &&
+                                !it.media.equals("MOVIE", ignoreCase = true) &&
+                                !it.media.equals("OVA", ignoreCase = true) &&
+                                !it.media.equals("SPECIAL", ignoreCase = true)
+                        }
+                        val distinctMainlineArmIds = tvArmMappings
+                            .mapNotNull { it.anilistId ?: it.malId }
+                            .toSet()
+
+                        // Continuous single-entry anime (e.g. Yu-Gi-Oh! Duel Monsters 224 ep, Yu-Gi-Oh! Zexal 146 ep, Hunter x Hunter 148 ep)
+                        if (!first.isMovie && sortedSeasons.size > 1 && totalWatchedFlat > 0) {
+                            val mainlineCandidates = resolveMainlineCandidates(
+                                cleanShowTitle = cleanShowTitle,
+                                isMovie = false,
+                                allCandidates = allCandidates,
+                                prefersDub = prefersDub,
+                            )
+                            val singleContinuousTarget = when {
+                                mainlineCandidates.size == 1 -> mainlineCandidates.first()
+                                distinctMainlineArmIds.size <= 1 -> resolveCandidatesForSeason(
+                                    seasonNumber = 1,
+                                    isMovie = false,
+                                    cleanShowTitle = cleanShowTitle,
+                                    armMappings = tvArmMappings,
+                                    allCandidates = allCandidates,
+                                    prefersDub = prefersDub,
+                                ).singleOrNull()
+                                else -> null
+                            }
+                            if (singleContinuousTarget != null) {
+                                val knownEpCount = maxOf(
+                                    singleContinuousTarget.releasedEpisodes,
+                                    singleContinuousTarget.totalEpisodes ?: 0,
+                                )
+                                val firstSeasonMax = sortedSeasons.first().watchedEpisodes.maxOrNull() ?: 0
+                                val shouldFlatten = knownEpCount >= totalWatchedFlat && (
+                                    distinctMainlineArmIds.size <= 1 ||
+                                        (mainlineCandidates.size == 1 && knownEpCount > firstSeasonMax)
+                                    )
+                                if (shouldFlatten) {
+                                    val flatTimestamps = sortedSeasons.flatMap { s ->
+                                        s.watchedEpisodes.sorted().map { epNum ->
+                                            s.episodeTimestampsMs[epNum] ?: s.lastWatchedAtMs
+                                        }
+                                    }
+                                    val entry = buildSyntheticHistoryEntryFromSequentialCount(
+                                        anime = singleContinuousTarget,
+                                        knownEpCount = knownEpCount,
+                                        watchedTimestamps = flatTimestamps,
+                                    )
+                                    if (entry != null) {
+                                        mergedHistory.add(entry)
+                                        matchedEpisodesCount += entry.episodesProgress.size
+                                        anySeasonMatched = true
+                                        if (first.isFavorite || first.isWatchlisted) {
+                                            mergedFavorites.add(singleContinuousTarget)
+                                            syncedFavoriteKeys.add(singleContinuousTarget.uniqueKey)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Multi-season / split-cour / single-season / movie mapping (zero getEpisodes() network calls!)
+                        if (!anySeasonMatched) {
+                            val effectiveArm = if (first.isMovie) armMappings else tvArmMappings.ifEmpty { armMappings }
+                            for (seasonRow in sortedSeasons) {
+                                val matchedCours = resolveCandidatesForSeason(
+                                    seasonNumber = seasonRow.seasonNumber,
+                                    isMovie = seasonRow.isMovie,
+                                    cleanShowTitle = cleanShowTitle,
+                                    armMappings = effectiveArm,
+                                    allCandidates = allCandidates,
+                                    prefersDub = prefersDub,
+                                )
+                                if (matchedCours.isEmpty()) continue
+
+                                if (seasonRow.watchedEpisodes.isEmpty()) {
+                                    if (seasonRow.isFavorite || seasonRow.isWatchlisted) {
+                                        mergedFavorites.add(matchedCours.first())
+                                        syncedFavoriteKeys.add(matchedCours.first().uniqueKey)
+                                        anySeasonMatched = true
+                                    }
+                                    continue
+                                }
+
+                                var epOffset = 0
+                                for (courAnime in matchedCours) {
+                                    val courTotalEps = maxOf(courAnime.releasedEpisodes, courAnime.totalEpisodes ?: 0)
+                                    val effectiveCourSize = if (courTotalEps > 0) {
+                                        courTotalEps
+                                    } else {
+                                        seasonRow.watchedEpisodes.maxOrNull() ?: 1
+                                    }
+                                    val epDurationMs = (courAnime.runtimeMinutes ?: if (seasonRow.isMovie) 90 else 24)
+                                        .coerceAtLeast(1) * 60_000L
+
+                                    val epMap = linkedMapOf<String, EpisodeProgress>()
+                                    var highestEpInt = 0
+                                    var latestTs = seasonRow.lastWatchedAtMs
+
+                                    for (epInt in 1..effectiveCourSize) {
+                                        val targetSeasonEp = epOffset + epInt
+                                        val matchedNum = when {
+                                            targetSeasonEp in seasonRow.watchedEpisodes -> targetSeasonEp
+                                            matchedCours.size == 1 && epInt in seasonRow.watchedEpisodes -> epInt
+                                            else -> null
+                                        } ?: continue
+
+                                        val ts = seasonRow.episodeTimestampsMs[matchedNum] ?: seasonRow.lastWatchedAtMs
+                                        epMap[epInt.toString()] = EpisodeProgress(
+                                            episodeNum = epInt.toString(),
+                                            videoId = "",
+                                            positionMs = 0L,
+                                            durationMs = epDurationMs,
+                                            completed = true,
+                                            updatedAt = ts,
+                                        )
+                                        highestEpInt = epInt
+                                        if (ts > latestTs) latestTs = ts
+                                    }
+
+                                    epOffset += effectiveCourSize
+                                    if (epMap.isNotEmpty() && highestEpInt > 0) {
+                                        val atLatest = courTotalEps > 0 && highestEpInt >= courTotalEps
+                                        mergedHistory.add(
+                                            WatchHistoryEntry(
+                                                anime = courAnime.copy(
+                                                    releasedEpisodes = maxOf(courAnime.releasedEpisodes, courTotalEps),
+                                                ),
+                                                currentEpisodeNum = highestEpInt.toString(),
+                                                currentVideoId = "",
+                                                progressMs = 0L,
+                                                durationMs = epDurationMs,
+                                                completed = true,
+                                                isAtLatestEpisode = atLatest,
+                                                updatedAt = latestTs,
+                                                episodesProgress = epMap,
+                                            )
+                                        )
+                                        matchedEpisodesCount += epMap.size
+                                        anySeasonMatched = true
+                                        if (seasonRow.isFavorite || seasonRow.isWatchlisted) {
+                                            mergedFavorites.add(courAnime)
+                                            syncedFavoriteKeys.add(courAnime.uniqueKey)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (anySeasonMatched) {
+                            matchedShowsCount++
+                        } else {
+                            skippedNonAnimeOrMissing.incrementAndGet()
+                        }
+
+                        // Incremental save every 15 anime so progress is never lost
+                        if (mergedHistory.size >= 15) {
+                            historyRepo.mergeImport(mergedHistory.toList())
+                            mergedHistory.clear()
+                        }
+                        if (mergedFavorites.size >= 15) {
+                            favoritesRepo.mergeImport(mergedFavorites.distinctBy { it.uniqueKey })
+                            mergedFavorites.clear()
+                        }
                     }
 
                     if (mergedHistory.isNotEmpty()) {
@@ -1444,10 +1527,11 @@ class AppViewModel(
                         favoritesRepo.mergeImport(mergedFavorites.distinctBy { it.uniqueKey })
                     }
                     intArrayOf(
-                        matchedShowsCount.get(),
-                        matchedEpisodesCount.get(),
-                        mergedFavorites.distinctBy { it.uniqueKey }.size,
+                        matchedShowsCount,
+                        matchedEpisodesCount,
+                        syncedFavoriteKeys.size,
                         skippedNonAnimeOrMissing.get(),
+                        if (rateLimited) 1 else 0,
                     )
                 }
             }
@@ -1459,7 +1543,12 @@ class AppViewModel(
                     val eps = counts[1]
                     val favs = counts[2]
                     val skipped = counts[3]
+                    val wasRateLimited = counts[4] == 1
                     when {
+                        wasRateLimited && shows > 0 ->
+                            "Importati $shows anime ($eps episodi). AnimeUnity ha limitato temporaneamente le richieste: attendi 1-2 minuti e riprova per completare i restanti."
+                        wasRateLimited ->
+                            "AnimeUnity sta limitando temporaneamente le richieste: attendi 1-2 minuti e riprova l'importazione."
                         shows == 0 && favs == 0 && skipped == 0 ->
                             "Nessun episodio trovato nel file (supportati suite-export .zip, .ndjson e Trakt .json)."
                         shows == 0 && favs == 0 ->
@@ -1475,42 +1564,72 @@ class AppViewModel(
         }
     }
 
-    private fun buildHistoryEntryFromSequentialCount(
+    private fun buildSyntheticHistoryEntryFromSequentialCount(
         anime: AnimeItem,
-        episodes: List<EpisodeItem>,
+        knownEpCount: Int,
         watchedTimestamps: List<Long>,
     ): WatchHistoryEntry? {
-        if (episodes.isEmpty() || watchedTimestamps.isEmpty()) return null
-        val count = minOf(episodes.size, watchedTimestamps.size)
+        if (watchedTimestamps.isEmpty()) return null
+        val totalAvailable = maxOf(knownEpCount, anime.releasedEpisodes, anime.totalEpisodes ?: 0)
+        val count = if (totalAvailable > 0) minOf(watchedTimestamps.size, totalAvailable) else watchedTimestamps.size
+        if (count <= 0) return null
+
+        val epDurationMs = (anime.runtimeMinutes ?: 24).coerceAtLeast(1) * 60_000L
         val epMap = linkedMapOf<String, EpisodeProgress>()
-        var lastEp: EpisodeItem? = null
         var maxTs = 0L
         for (i in 0 until count) {
-            val ep = episodes[i]
+            val epNumStr = (i + 1).toString()
             val ts = watchedTimestamps[i]
-            epMap[ep.number] = EpisodeProgress(
-                episodeNum = ep.number,
-                videoId = ep.videoId,
+            epMap[epNumStr] = EpisodeProgress(
+                episodeNum = epNumStr,
+                videoId = "",
                 positionMs = 0L,
-                durationMs = ep.runtimeSeconds.toLong().coerceAtLeast(1L) * 1000L,
+                durationMs = epDurationMs,
                 completed = true,
                 updatedAt = ts,
             )
-            lastEp = ep
             if (ts > maxTs) maxTs = ts
         }
-        val finalEp = lastEp ?: return null
+        val atLatest = totalAvailable > 0 && count >= totalAvailable
         return WatchHistoryEntry(
-            anime = anime.copy(releasedEpisodes = maxOf(anime.releasedEpisodes, episodes.size)),
-            currentEpisodeNum = finalEp.number,
-            currentVideoId = finalEp.videoId,
+            anime = anime.copy(releasedEpisodes = maxOf(anime.releasedEpisodes, totalAvailable)),
+            currentEpisodeNum = count.toString(),
+            currentVideoId = "",
             progressMs = 0L,
-            durationMs = finalEp.runtimeSeconds.toLong().coerceAtLeast(1L) * 1000L,
+            durationMs = epDurationMs,
             completed = true,
-            isAtLatestEpisode = episodes.lastOrNull()?.number == finalEp.number,
+            isAtLatestEpisode = atLatest,
             updatedAt = maxTs,
             episodesProgress = epMap,
         )
+    }
+
+    private fun resolveMainlineCandidates(
+        cleanShowTitle: String,
+        isMovie: Boolean,
+        allCandidates: List<AnimeItem>,
+        prefersDub: Boolean,
+    ): List<AnimeItem> {
+        val strongTitle = allCandidates.filter { cand ->
+            if (isMovie && !cand.type.equals("Movie", ignoreCase = true)) return@filter false
+            SearchUtils.scoreQueryAgainstTitles(
+                cleanShowTitle,
+                listOf(SuiteTvIntegration.cleanTitleForSuiteTv(cand.title), cand.title, cand.titleIt, cand.titleJa),
+            ) >= 0.78
+        }
+        if (strongTitle.isEmpty()) return emptyList()
+        val byId = LinkedHashMap<String, AnimeItem>()
+        for (item in strongTitle) {
+            val existing = byId[item.id]
+            if (existing == null || (item.isDub == prefersDub && existing.isDub != prefersDub)) {
+                byId[item.id] = item
+            }
+        }
+        val deduped = SearchUtils.sortAnimeItems(byId.values.toList())
+        if (isMovie) return deduped
+        return deduped.filter {
+            it.type.equals("TV", ignoreCase = true) || it.type.equals("ONA", ignoreCase = true)
+        }.ifEmpty { deduped }
     }
 
     private fun resolveCandidatesForSeason(
@@ -1532,7 +1651,7 @@ class AppViewModel(
             return SearchUtils.sortAnimeItems(byId.values.toList())
         }
 
-        // 1. Exact AniList / MAL ID matching from ARM for this TVDB season (handles multi-cour seasons!)
+        // 1. Exact AniList / MAL ID matching from ARM for this TVDB season (when candidates carry IDs)
         val seasonArm = if (isMovie) {
             armMappings
         } else {
@@ -1551,21 +1670,35 @@ class AppViewModel(
             }
         }
 
-        // 2. Fallback: high-confidence title & season matching
-        val strongTitle = allCandidates.filter { cand ->
-            if (isMovie && !cand.type.equals("Movie", ignoreCase = true)) return@filter false
-            SearchUtils.scoreQueryAgainstTitles(
-                cleanShowTitle,
-                listOf(SuiteTvIntegration.cleanTitleForSuiteTv(cand.title), cand.title, cand.titleIt, cand.titleJa),
-            ) >= 0.78
-        }
-        if (strongTitle.isEmpty()) return emptyList()
-        val deduped = preferLanguageVariant(strongTitle)
-        if (isMovie) return listOf(deduped.first())
+        // 2. High-confidence title & ARM multi-cour chronological mapping
+        val mainline = resolveMainlineCandidates(cleanShowTitle, isMovie, allCandidates, prefersDub)
+        if (mainline.isEmpty()) return emptyList()
+        if (isMovie) return listOf(mainline.first())
 
-        val mainline = deduped.filter {
-            it.type.equals("TV", ignoreCase = true) || it.type.equals("ONA", ignoreCase = true)
-        }.ifEmpty { deduped }
+        val armSeasonCounts = armMappings
+            .filter {
+                val s = it.tvdbSeason
+                s != null && s > 0 &&
+                    !it.media.equals("MOVIE", ignoreCase = true) &&
+                    !it.media.equals("OVA", ignoreCase = true) &&
+                    !it.media.equals("SPECIAL", ignoreCase = true)
+            }
+            .groupBy { it.tvdbSeason!! }
+            .mapValues { (_, list) ->
+                list.mapNotNull { it.anilistId ?: it.malId }.distinct().size.coerceAtLeast(1)
+            }
+
+        val seasonCourCount = armSeasonCounts[seasonNumber]
+        if (seasonCourCount != null) {
+            val offsetBefore = armSeasonCounts.filterKeys { it in 1 until seasonNumber }.values.sum()
+            if (seasonCourCount > 1 && offsetBefore + seasonCourCount <= mainline.size) {
+                return mainline.subList(offsetBefore, offsetBefore + seasonCourCount)
+            }
+            if (seasonCourCount == 1 && offsetBefore != seasonNumber - 1 && offsetBefore in mainline.indices) {
+                return listOf(mainline[offsetBefore])
+            }
+        }
+
         val explicit = mainline.firstOrNull { SuiteTvIntegration.extractSeasonNumber(it.title) == seasonNumber }
         if (explicit != null) return listOf(explicit)
         val idx = (seasonNumber - 1).coerceIn(0, mainline.lastIndex)
@@ -1585,23 +1718,43 @@ class AppViewModel(
                     for (h in histList) allAnimeByKey[h.uniqueKey] = h.anime
                     for (f in favList) allAnimeByKey.putIfAbsent(f.uniqueKey, f)
 
+                    // Phase 1: Sequentially enrich any anime missing AniList/MAL IDs with polite pacing
+                    val enrichedByKey = LinkedHashMap<String, AnimeItem>(allAnimeByKey.size)
+                    var animeUnityCalls = 0
+                    var exportRateLimited = false
+                    val entriesList = allAnimeByKey.entries.toList()
+                    for ((idx, entry) in entriesList.withIndex()) {
+                        val (key, anime) = entry
+                        if (!exportRateLimited && anime.anilistId == 0 && anime.malId == 0 && anime.id.isNotBlank()) {
+                            _suiteTvSyncProgress.value = "Recupero metadati (${idx + 1}/${entriesList.size})..."
+                            if (animeUnityCalls > 0) delay(350L)
+                            animeUnityCalls++
+                            val enriched = try {
+                                client.getAnimeDetails(anime.id, anime.isDub)
+                            } catch (_: RateLimitedException) {
+                                exportRateLimited = true
+                                anime
+                            } catch (_: IOException) {
+                                anime
+                            }
+                            enrichedByKey[key] = enriched
+                        } else {
+                            enrichedByKey[key] = anime
+                        }
+                    }
+
+                    // Phase 2: Parallel Suite TV ID resolution via third-party ARM API
                     val resolvedTargets = ConcurrentHashMap<String, ResolvedSuiteTvTarget>()
-                    val total = allAnimeByKey.size
+                    val total = enrichedByKey.size
                     val done = AtomicInteger(0)
                     val semaphore = Semaphore(4)
 
                     coroutineScope {
-                        allAnimeByKey.entries.map { (key, anime) ->
+                        enrichedByKey.entries.map { (key, enriched) ->
                             async {
                                 semaphore.withPermit {
                                     val idx = done.incrementAndGet()
                                     _suiteTvSyncProgress.value = "Mappatura Suite TV ($idx/$total)..."
-                                    val enriched = if (anime.anilistId == 0 && anime.malId == 0 && anime.id.isNotBlank()) {
-                                        runCatchingCancellable { client.getAnimeDetails(anime.id, anime.isDub) }
-                                            .getOrDefault(anime)
-                                    } else {
-                                        anime
-                                    }
                                     val target = runCatchingCancellable {
                                         SuiteTvIntegration.resolveSuiteTvTarget(thirdPartyHttpClient, enriched)
                                     }.getOrNull()

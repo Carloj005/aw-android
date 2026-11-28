@@ -203,6 +203,10 @@ class DohFallbackDns(
 class MemoryCookieJar : CookieJar {
     private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
 
+    fun clear() {
+        store.clear()
+    }
+
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val host = url.host.lowercase(Locale.ROOT)
         val list = store.getOrPut(host) { mutableListOf() }

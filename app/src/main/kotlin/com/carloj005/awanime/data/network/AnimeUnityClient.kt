@@ -13,6 +13,7 @@ import com.carloj005.awanime.data.model.SkipSegment
 import com.carloj005.awanime.data.model.StreamResolution
 import com.carloj005.awanime.util.runCatchingCancellable
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -26,6 +27,11 @@ import okhttp3.Request
 import java.io.IOException
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+
+class RateLimitedException(
+    val httpCode: Int,
+    message: String,
+) : IOException(message)
 
 /**
  * Native Kotlin client for AnimeUnity (Laravel + Inertia.js + REST API).
@@ -123,6 +129,11 @@ class AnimeUnityClient(
         sessionMutex.withLock {
             requireOnline()
             if (sessionReady && inertiaVersion.isNotBlank() && !forceRefresh) return@withLock
+            if (forceRefresh) {
+                httpClients.clearSessionCookies()
+                sessionReady = false
+                inertiaVersion = ""
+            }
 
             val candidates = linkedSetOf(baseUrl, DEFAULT_BASE_URL, "https://www.animeunity.cx")
             for (tld in CANDIDATE_TLDS) {
@@ -134,18 +145,23 @@ class AnimeUnityClient(
                 if (!networkMonitor.isOnline()) {
                     throw OfflineException("Connessione internet assente.")
                 }
-                try {
-                    val req = Request.Builder()
-                        .url("$cand/")
-                        .header("User-Agent", USER_AGENT)
-                        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                        .header("Accept-Language", "it-IT,it;q=0.9,en;q=0.8")
-                        .build()
-                    httpClients.sessionClient.newCall(req).execute().use { resp ->
-                        val body = resp.body?.string().orEmpty()
-                        if (resp.isSuccessful && isValidAnimeUnityHtml(body)) {
+                for (attempt in 0..1) {
+                    try {
+                        val req = Request.Builder()
+                            .url("$cand/")
+                            .header("User-Agent", USER_AGENT)
+                            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                            .header("Accept-Language", "it-IT,it;q=0.9,en;q=0.8")
+                            .build()
+                        val outcome = httpClients.sessionClient.newCall(req).execute().use { resp ->
+                            val code = resp.code
+                            val body = resp.body?.string().orEmpty()
                             val finalOrigin = "${resp.request.url.scheme}://${resp.request.url.host}"
-                            if (!isTrustedAnimeUnityOrigin(finalOrigin)) continue
+                            Triple(code, body, finalOrigin)
+                        }
+                        val (code, body, finalOrigin) = outcome
+                        if (code in 200..299 && isValidAnimeUnityHtml(body)) {
+                            if (!isTrustedAnimeUnityOrigin(finalOrigin)) break
                             baseUrl = finalOrigin
                             prefs?.edit()?.putString(KEY_BASE_URL, finalOrigin)?.apply()
                             val page = extractInertiaPage(body)
@@ -160,9 +176,25 @@ class AnimeUnityClient(
                             sessionReady = true
                             return@withLock
                         }
+                        if (code == 403 || code == 429) {
+                            if (attempt == 0 && (cand == baseUrl || cand == DEFAULT_BASE_URL)) {
+                                httpClients.clearSessionCookies()
+                                delay(1200L)
+                                continue
+                            }
+                            if (cand == baseUrl || cand == DEFAULT_BASE_URL) {
+                                throw RateLimitedException(
+                                    httpCode = code,
+                                    message = "AnimeUnity sta limitando temporaneamente le richieste (HTTP $code). Attendi 1-2 minuti e riprova.",
+                                )
+                            }
+                        }
+                        break
+                    } catch (e: RateLimitedException) {
+                        throw e
+                    } catch (_: IOException) {
+                        break
                     }
-                } catch (_: IOException) {
-                    continue
                 }
             }
             throw IOException("Impossibile raggiungere AnimeUnity ($baseUrl). Controlla la connessione internet.")
@@ -192,43 +224,62 @@ class AnimeUnityClient(
                         .header("X-Inertia-Partial-Data", partialData.joinToString(","))
                 }
             }
-            httpClients.sessionClient.newCall(reqBuilder.build()).execute().use { resp ->
-                if (resp.code == 409 && attempt == 0) {
-                    ensureSession(forceRefresh = true)
-                    return@use
-                }
-                if (!resp.isSuccessful) {
-                    throw IOException("Errore HTTP ${resp.code} su $path")
-                }
-                val ct = resp.header("Content-Type").orEmpty().lowercase()
-                val text = resp.body?.string().orEmpty()
-                val page = if ("json" in ct || text.trimStart().startsWith("{")) {
-                    json.parseToJsonElement(text).jsonObject
-                } else {
-                    extractInertiaPage(text)
-                        ?: throw IOException("Risposta Inertia non valida per $path")
-                }
-                page.str("version")?.takeIf { it.isNotBlank() }?.let { inertiaVersion = it }
-                return@withContext page
+            val result = httpClients.sessionClient.newCall(reqBuilder.build()).execute().use { resp ->
+                Triple(resp.code, resp.header("Content-Type").orEmpty().lowercase(), resp.body?.string().orEmpty())
             }
+            val (code, ct, text) = result
+            if ((code == 409 || code == 419 || code == 403) && attempt == 0) {
+                ensureSession(forceRefresh = true)
+                continue
+            }
+            if (code == 403 || code == 429) {
+                throw RateLimitedException(
+                    httpCode = code,
+                    message = "AnimeUnity sta limitando temporaneamente le richieste (HTTP $code). Attendi 1-2 minuti e riprova.",
+                )
+            }
+            if (code !in 200..299) {
+                throw IOException("Errore HTTP $code su $path")
+            }
+            val page = if ("json" in ct || text.trimStart().startsWith("{")) {
+                json.parseToJsonElement(text).jsonObject
+            } else {
+                extractInertiaPage(text)
+                    ?: throw IOException("Risposta Inertia non valida per $path")
+            }
+            page.str("version")?.takeIf { it.isNotBlank() }?.let { inertiaVersion = it }
+            return@withContext page
         }
-        throw IOException("Errore versione Inertia (409) persistente su $path")
+        throw IOException("Errore versione Inertia persistente su $path")
     }
 
-    private fun apiGetJson(pathWithQuery: String): JsonElement {
-        val req = Request.Builder()
-            .url("$baseUrl$pathWithQuery")
-            .header("User-Agent", USER_AGENT)
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Referer", "$baseUrl/")
-            .build()
-        httpClients.sessionClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IOException("Errore HTTP ${resp.code} su $pathWithQuery")
+    private suspend fun apiGetJson(pathWithQuery: String): JsonElement {
+        for (attempt in 0..1) {
+            val req = Request.Builder()
+                .url("$baseUrl$pathWithQuery")
+                .header("User-Agent", USER_AGENT)
+                .header("Accept", "application/json, text/plain, */*")
+                .header("Referer", "$baseUrl/")
+                .build()
+            val (code, text) = httpClients.sessionClient.newCall(req).execute().use { resp ->
+                resp.code to resp.body?.string().orEmpty()
             }
-            val text = resp.body?.string().orEmpty()
+            if ((code == 403 || code == 419) && attempt == 0) {
+                ensureSession(forceRefresh = true)
+                continue
+            }
+            if (code == 403 || code == 429) {
+                throw RateLimitedException(
+                    httpCode = code,
+                    message = "AnimeUnity sta limitando temporaneamente le richieste (HTTP $code). Attendi 1-2 minuti e riprova.",
+                )
+            }
+            if (code !in 200..299) {
+                throw IOException("Errore HTTP $code su $pathWithQuery")
+            }
             return json.parseToJsonElement(text)
         }
+        throw IOException("Errore di sessione persistente su $pathWithQuery")
     }
 
     suspend fun getHomeCarousel(forceRefresh: Boolean = false): List<AnimeItem> = withContext(Dispatchers.IO) {
@@ -272,7 +323,7 @@ class AnimeUnityClient(
         collected
     }
 
-    private fun fetchTrendingAnimes(): List<AnimeItem> {
+    private suspend fun fetchTrendingAnimes(): List<AnimeItem> {
         val payload = apiGetJson("/api/top-anime?page=1").jsonObject
         val arr = payload["data"]?.jsonArray ?: JsonArray(emptyList())
         val seenTrending = HashSet<String>()
@@ -286,7 +337,7 @@ class AnimeUnityClient(
         }
     }
 
-    private fun querySearchRecords(query: String): List<AnimeItem> {
+    private suspend fun querySearchRecords(query: String): List<AnimeItem> {
         val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.name())
         val mergedById = LinkedHashMap<String, JsonObject>()
 
@@ -303,6 +354,8 @@ class AnimeUnityClient(
                 val perPage = payload.intVal("per_page") ?: 30
                 if (arr.size < perPage || page >= lastPage) break
             }
+        } catch (e: RateLimitedException) {
+            throw e
         } catch (_: IOException) {
             // Fallback to /api/search below
         }
@@ -317,11 +370,30 @@ class AnimeUnityClient(
                     mergedById.putIfAbsent(id, obj)
                 }
             }
+        } catch (e: RateLimitedException) {
+            throw e
         } catch (e: IOException) {
             if (mergedById.isEmpty()) throw e
         }
 
         return mergedById.values.flatMap { AnimeUnityParser.parseAnimeVariants(it) }
+    }
+
+    /**
+     * Lightweight single-request archive lookup (`1` HTTP call total, no multi-page or fuzzy burst)
+     * designed for bulk operations such as Suite TV library import without triggering WAF rate limits.
+     */
+    suspend fun searchArchiveQuick(rawQuery: String): List<AnimeItem> = withContext(Dispatchers.IO) {
+        val trimmed = rawQuery.trim()
+        if (trimmed.isEmpty()) return@withContext emptyList()
+        ensureSession()
+        val expanded = SearchUtils.expandQueryAlias(trimmed)
+        val encoded = URLEncoder.encode(expanded, StandardCharsets.UTF_8.name())
+        val payload = apiGetJson("/api/archive?query=$encoded&page=1").jsonObject
+        val arr = payload["data"]?.jsonArray ?: return@withContext emptyList()
+        val parsed = arr.mapNotNull { it as? JsonObject }
+            .flatMap { AnimeUnityParser.parseAnimeVariants(it) }
+        SearchUtils.sortAnimeItems(parsed, expanded)
     }
 
     suspend fun search(rawQuery: String): List<AnimeItem> = withContext(Dispatchers.IO) {
@@ -481,22 +553,38 @@ class AnimeUnityClient(
 
         while (true) {
             val query = if (start != null) "?start=$start" else ""
-            val req = Request.Builder()
-                .url("$baseUrl/api/anime/$activeId/episodes$query")
-                .header("User-Agent", USER_AGENT)
-                .header("Accept", "application/json, text/plain, */*")
-                .header("Referer", "$baseUrl/")
-                .build()
+            var payload: JsonObject? = null
+            for (attempt in 0..1) {
+                val req = Request.Builder()
+                    .url("$baseUrl/api/anime/$activeId/episodes$query")
+                    .header("User-Agent", USER_AGENT)
+                    .header("Accept", "application/json, text/plain, */*")
+                    .header("Referer", "$baseUrl/")
+                    .build()
 
-            val payload: JsonObject? = httpClients.sessionClient.newCall(req).execute().use { resp ->
-                if (resp.code == 404 && !retriedCanonical) {
-                    retriedCanonical = true
-                    null
-                } else if (!resp.isSuccessful) {
-                    throw IOException("Errore HTTP ${resp.code} nel recupero episodi")
-                } else {
-                    json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                val (code, bodyText) = httpClients.sessionClient.newCall(req).execute().use { resp ->
+                    resp.code to resp.body?.string().orEmpty()
                 }
+                if ((code == 403 || code == 419) && attempt == 0) {
+                    ensureSession(forceRefresh = true)
+                    continue
+                }
+                if (code == 403 || code == 429) {
+                    throw RateLimitedException(
+                        httpCode = code,
+                        message = "AnimeUnity sta limitando temporaneamente le richieste (HTTP $code). Attendi 1-2 minuti e riprova.",
+                    )
+                }
+                if (code == 404 && !retriedCanonical) {
+                    retriedCanonical = true
+                    payload = null
+                    break
+                }
+                if (code !in 200..299) {
+                    throw IOException("Errore HTTP $code nel recupero episodi")
+                }
+                payload = json.parseToJsonElement(bodyText).jsonObject
+                break
             }
 
             if (payload == null) {

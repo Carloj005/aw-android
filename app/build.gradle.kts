@@ -33,8 +33,8 @@ android {
     applicationId = "com.carloj005.awanime"
     minSdk = 26
     targetSdk = 36
-    versionCode = 12
-    versionName = "1.4.2"
+    versionCode = 13
+    versionName = "1.4.3"
     buildConfigField("String", "GITHUB_REPO", "\"Carloj005/aw-android\"")
     buildConfigField("String", "BUG_REPORT_ENDPOINT", "\"https://aw-anime-reports.carloj005.workers.dev/report\"")
   }

@@ -145,10 +145,21 @@ class HistoryRepository(
                     byKey[inc.uniqueKey] = inc
                 } else {
                     val mergedEps = mergeEpisodeProgressMaps(prev.episodesProgress, inc.episodesProgress)
-                    val primary = if (inc.updatedAt >= prev.updatedAt) inc else prev
+                    val prevCompleted = prev.episodesProgress.values.count { it.completed }
+                    val incCompleted = inc.episodesProgress.values.count { it.completed }
+                    val primary = when {
+                        inc.updatedAt > prev.updatedAt -> inc
+                        prev.updatedAt > inc.updatedAt -> {
+                            // Heal partial/truncated imports (e.g. 47/224) when a fuller caught-up import arrives
+                            if (incCompleted > prevCompleted && inc.isAtLatestEpisode) inc else prev
+                        }
+                        incCompleted >= prevCompleted -> inc
+                        else -> prev
+                    }
                     val fallbackAnime = if (primary === inc) prev.anime else inc.anime
                     byKey[inc.uniqueKey] = primary.copy(
                         anime = mergeRichAnimeMetadata(primary.anime, fallbackAnime),
+                        updatedAt = maxOf(prev.updatedAt, inc.updatedAt),
                         episodesProgress = mergedEps,
                     )
                 }
@@ -179,9 +190,9 @@ class HistoryRepository(
     private fun mergeRichAnimeMetadata(incoming: AnimeItem, previous: AnimeItem?): AnimeItem {
         if (previous == null) return incoming
         return incoming.copy(
-            posterUrl = incoming.posterUrl ?: previous.posterUrl,
-            bannerUrl = incoming.bannerUrl ?: previous.bannerUrl,
-            coverUrl = incoming.coverUrl ?: previous.coverUrl,
+            posterUrl = incoming.posterUrl?.takeIf { it.isNotBlank() } ?: previous.posterUrl?.takeIf { it.isNotBlank() },
+            bannerUrl = incoming.bannerUrl?.takeIf { it.isNotBlank() } ?: previous.bannerUrl?.takeIf { it.isNotBlank() },
+            coverUrl = incoming.coverUrl?.takeIf { it.isNotBlank() } ?: previous.coverUrl?.takeIf { it.isNotBlank() },
             plot = incoming.plot.ifBlank { previous.plot },
             genres = incoming.genres.ifEmpty { previous.genres },
             studios = incoming.studios.ifEmpty { previous.studios },

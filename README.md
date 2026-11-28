@@ -4,6 +4,14 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.4.3 — Hotfix Anti-Rate-Limit Import Suite TV, Copertine & Serie Continue
+- **Fix definitivo blocco WAF `HTTP 403` dopo import `.zip` Suite TV**:
+  - Importazione ristrutturata in 2 fasi: **Fase 1** pre-filtra in parallelo su ARM v2 tutti i titoli non-anime (zero chiamate verso AnimeUnity); **Fase 2** interroga AnimeUnity in modo sequenziale e cadenzato (`1` sola richiesta leggera `/api/archive?query=...&page=1` per anime con pausa `450ms`, **zero** chiamate `getEpisodes()`, riuso immediato dei titoli già presenti in libreria, salvataggio incrementale ogni 15 anime e circuit-breaker su `RateLimitedException` HTTP `403`/`429`).
+  - `AnimeUnityClient` ora gestisce `RateLimitedException` su `ensureSession`, `apiGetJson`, `inertiaGet` e `getEpisodes` con singolo refresh pulito dei cookie (`MemoryCookieJar.clear()`) senza spammare 24 TLD alternativi quando AnimeUnity limita temporaneamente l'IP.
+  - Anche l'esportazione Suite TV è ora cadenzata (`350ms` sequenziale) nell'arricchimento dei metadati mancanti.
+- **Fix copertine mancanti**: `HttpClients.imageClient` (Coil) invia lo stesso `User-Agent` mobile del client principale e `AnimeUnityParser` legge il fallback `image_variants.*` quando `images.*` è assente.
+- **Fix serie continue multi-stagione in "Continua a guardare"** (es. *Yu-Gi-Oh! Duel Monsters* 224 ep., *Yu-Gi-Oh! Zexal* 146 ep.): esclusi film/OVA/speciali dal conteggio ARM e appiattimento automatico delle stagioni TVDB verso le serie uniche su AnimeUnity; `HistoryRepository.mergeImport` ripara automaticamente anche eventuali voci parziali già importate in precedenza (`47/224` → `224/224`).
+
 ## Novità v1.4.2 — Sincronizzazione Nativa Suite TV (.zip / .ndjson) con Filtro Automatico Non-Anime
 - **Importazione Nativa `suite-export-*.zip`**: *Impostazioni → Integrazione Suite TV → Importa .zip* legge direttamente l'archivio ufficiale di Suite TV (`manifest.json`, `shows.ndjson`, `movies.ndjson`), oltre a `.ndjson` singoli e Trakt `.json`.
 - **Matching Preciso Multi-Stagione & Filtro Non-Anime**: reverse-mapping via ARM v2 (`/api/v2/thetvdb`, `/api/v2/themoviedb`) che scarta istantaneamente serie/film live-action non-anime, abbina ogni stagione tramite ID AniList/MAL su AnimeUnity (gestendo anche anime split-cour come *JoJo* S2/S5 e serie continue come *Yu-Gi-Oh!*), conserva i timestamp `watchedAt` reali e mostra avanzamento live durante l'importazione.

@@ -152,6 +152,16 @@ object AnimeUnityParser {
 
         val statusRaw = matchedVariant?.str("status") ?: obj.str("default_status") ?: obj.str("status")
         val images = obj["images"] as? JsonObject
+        val imageVariants = obj["image_variants"] as? JsonObject
+        val posterFallback = (imageVariants?.get("poster") as? JsonObject)?.let { pv ->
+            pv.str("384") ?: pv.str("240") ?: pv.str("460") ?: pv.str("160")
+        } ?: imageVariants?.str("poster")?.takeIf { it.isNotBlank() }
+        val bannerFallback = (imageVariants?.get("banner") as? JsonObject)?.let { bv ->
+            bv.str("640") ?: bv.str("1900")
+        } ?: imageVariants?.str("banner")?.takeIf { it.isNotBlank() }
+        val coverFallback = (imageVariants?.get("cover") as? JsonObject)?.let { cv ->
+            cv.str("640") ?: cv.str("320")
+        } ?: imageVariants?.str("cover")?.takeIf { it.isNotBlank() }
         val genres = extractNamedList(obj, "genres")
         val studios = extractNamedList(obj, "studios")
 
@@ -172,9 +182,9 @@ object AnimeUnityParser {
             status = mapStatus(statusRaw),
             score = obj.str("score")?.takeIf { it.isNotBlank() && it != "0" },
             views = obj.longVal("views") ?: 0L,
-            posterUrl = images?.str("poster"),
-            coverUrl = images?.str("cover"),
-            bannerUrl = images?.str("banner"),
+            posterUrl = images?.str("poster")?.takeIf { it.isNotBlank() } ?: posterFallback,
+            coverUrl = images?.str("cover")?.takeIf { it.isNotBlank() } ?: coverFallback,
+            bannerUrl = images?.str("banner")?.takeIf { it.isNotBlank() } ?: bannerFallback,
             plot = obj.str("plot").orEmpty(),
             genres = genres,
             studios = studios,

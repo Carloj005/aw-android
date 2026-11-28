@@ -19,6 +19,10 @@ class HttpClients {
     val dohDns = DohFallbackDns(sharedDispatcher)
     private val sessionCookieJar = MemoryCookieJar()
 
+    fun clearSessionCookies() {
+        sessionCookieJar.clear()
+    }
+
     private val httpsOnlyInterceptor = Interceptor { chain ->
         val req = chain.request()
         if (req.url.scheme != "https") {
@@ -78,8 +82,20 @@ class HttpClients {
         .readTimeout(35, TimeUnit.SECONDS)
         .build()
 
-    /** Client per caricamento locandine/banner via Coil. */
+    /** Client per caricamento locandine/banner via Coil (con User-Agent browser mobile). */
     val imageClient: OkHttpClient = baseClient.newBuilder()
+        .addInterceptor { chain ->
+            val req = chain.request()
+            if (req.header("User-Agent") != null) {
+                chain.proceed(req)
+            } else {
+                chain.proceed(
+                    req.newBuilder()
+                        .header("User-Agent", AnimeUnityClient.USER_AGENT)
+                        .build()
+                )
+            }
+        }
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()

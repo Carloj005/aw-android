@@ -3,6 +3,14 @@
 Questo file contiene le note mostrate agli utenti nel popup aggiornamenti in-app e sul sito web.
 Regole di stile: italiano semplice e chiaro per tutti, nessuna parola tecnica, nessun simbolo Markdown (`**`, `` ` ``, link), massimo 1-2 righe per punto, diviso in `✨ Novità` e `🛠️ Correzioni`.
 
+## v1.4.3
+
+🛠️ Correzioni
+• Risolto il blocco di connessione (errore 403) che poteva comparire su Home, Calendario e copertine dopo aver importato un archivio Suite TV.
+• Importazione da Suite TV molto più leggera e sicura: ridotte drasticamente le richieste di rete, con salvataggio progressivo e ripresa automatica se ripeti l'importazione.
+• Risolto il problema degli anime lunghi già finiti (come Yu-Gi-Oh! Duel Monsters e Yu-Gi-Oh! Zexal) che restavano in "Continua a guardare" dopo l'importazione.
+• Migliorato il caricamento delle copertine degli anime importati.
+
 ## v1.4.2
 
 ✨ Novità

@@ -9,11 +9,18 @@ import com.carloj005.awanime.data.model.EpisodeProgress
 import com.carloj005.awanime.data.model.SearchSortOrder
 import com.carloj005.awanime.data.model.TrackedNotificationPrefs
 import com.carloj005.awanime.data.model.WatchHistoryEntry
+import com.carloj005.awanime.data.network.AnimeUnityParser
+import com.carloj005.awanime.data.network.MemoryCookieJar
 import com.carloj005.awanime.data.network.SearchUtils
 import com.carloj005.awanime.data.notifications.SequelTracker
+import com.carloj005.awanime.data.storage.HistoryRepository
 import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
 import com.carloj005.awanime.data.update.AppUpdater
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import okhttp3.Cookie
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -431,5 +438,117 @@ class V140FeaturesTest {
         val parsedNdjson = SuiteTvIntegration.parseImportedSuiteTvBytes(rawNdjson.toByteArray())
         assertEquals(2, parsedNdjson.size)
         assertEquals(listOf(1, 2), parsedNdjson.map { it.seasonNumber })
+    }
+
+    @Test
+    fun animeUnityParser_fallsBackToImageVariantsWhenPrimaryImagesMissing() {
+        val raw = """
+            {
+              "id": 266,
+              "slug": "yu-gi-oh-duel-monsters",
+              "title": "Yu-Gi-Oh! Duel Monsters",
+              "type": "TV",
+              "total_episodes": 224,
+              "images": { "poster": null, "banner": "" },
+              "image_variants": {
+                "poster": {
+                  "240": "https://img.animeunity.cx/anime/yugioh-240.jpg",
+                  "384": "https://img.animeunity.cx/anime/yugioh-poster.jpg"
+                },
+                "banner": {
+                  "640": "https://img.animeunity.cx/anime/yugioh-banner.jpg"
+                }
+              },
+              "variants": [{ "language": "ita", "episodes_count": 224 }]
+            }
+        """.trimIndent()
+        val obj = Json.parseToJsonElement(raw).jsonObject
+        val parsed = AnimeUnityParser.parseAnimeVariants(obj)
+        assertEquals(1, parsed.size)
+        assertEquals("https://img.animeunity.cx/anime/yugioh-poster.jpg", parsed[0].posterUrl)
+        assertEquals("https://img.animeunity.cx/anime/yugioh-banner.jpg", parsed[0].bannerUrl)
+        assertEquals(224, parsed[0].releasedEpisodes)
+    }
+
+    @Test
+    fun historyRepository_mergeImportHealsPartialContinuousImportAndBlankPoster() = runTest {
+        val tempDir = Files.createTempDirectory("aw_hist_heal_test").toFile()
+        try {
+            val repo = HistoryRepository(tempDir)
+            val partialAnime = AnimeItem(
+                id = "266",
+                title = "Yu-Gi-Oh! Duel Monsters (ITA)",
+                isDub = true,
+                posterUrl = "",
+                totalEpisodes = 224,
+                releasedEpisodes = 224,
+            )
+            val partialEps = (1..47).associate { ep ->
+                ep.toString() to EpisodeProgress(
+                    episodeNum = ep.toString(),
+                    videoId = "",
+                    completed = true,
+                    updatedAt = 1_750_000_000_000L,
+                )
+            }
+            val stalePartial = WatchHistoryEntry(
+                anime = partialAnime,
+                currentEpisodeNum = "47",
+                currentVideoId = "",
+                completed = true,
+                isAtLatestEpisode = false,
+                updatedAt = 1_760_000_000_000L, // Even if touched more recently than Suite TV export
+                episodesProgress = partialEps,
+            )
+            repo.mergeImport(listOf(stalePartial))
+            assertTrue(repo.getEntry("266_ita")!!.shouldShowInContinueWatching)
+
+            val fullAnime = partialAnime.copy(posterUrl = "https://img.animeunity.cx/anime/yugioh.jpg")
+            val fullEps = (1..224).associate { ep ->
+                ep.toString() to EpisodeProgress(
+                    episodeNum = ep.toString(),
+                    videoId = "",
+                    completed = true,
+                    updatedAt = 1_720_000_000_000L,
+                )
+            }
+            val healedFull = WatchHistoryEntry(
+                anime = fullAnime,
+                currentEpisodeNum = "224",
+                currentVideoId = "",
+                completed = true,
+                isAtLatestEpisode = true,
+                updatedAt = 1_720_000_000_000L,
+                episodesProgress = fullEps,
+            )
+            repo.mergeImport(listOf(healedFull))
+
+            val merged = repo.getEntry("266_ita")!!
+            assertEquals("224", merged.currentEpisodeNum)
+            assertEquals(224, merged.episodesProgress.size)
+            assertTrue(merged.isAtLatestEpisode)
+            assertTrue(merged.isCaughtUp)
+            assertFalse(merged.shouldShowInContinueWatching)
+            assertEquals("https://img.animeunity.cx/anime/yugioh.jpg", merged.anime.posterUrl)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun memoryCookieJar_clearWipesStoredCookies() {
+        val jar = MemoryCookieJar()
+        val url = "https://animeunity.cx/".toHttpUrl()
+        val cookie = Cookie.Builder()
+            .name("animeunity_session")
+            .value("abc123")
+            .domain("animeunity.cx")
+            .path("/")
+            .build()
+        jar.saveFromResponse(url, listOf(cookie))
+        assertEquals(1, jar.loadForRequest(url).size)
+
+        jar.clear()
+        assertTrue(jar.loadForRequest(url).isEmpty())
     }
 }
