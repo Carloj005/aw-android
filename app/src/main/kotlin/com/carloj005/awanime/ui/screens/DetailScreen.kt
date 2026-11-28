@@ -107,6 +107,7 @@ fun DetailScreen(
     onToggleFavorite: (AnimeItem) -> Unit,
     onToggleNotification: (AnimeItem) -> Unit,
     onOpenRelatedAnime: (AnimeItem) -> Unit,
+    onOpenSuiteTv: (AnimeItem) -> Unit,
     onSwitchLanguage: (Boolean) -> Unit,
     onPlayEpisode: (AnimeItem, List<EpisodeItem>, Int) -> Unit,
     onDownloadEpisode: (AnimeItem, EpisodeItem) -> Unit,
@@ -526,7 +527,7 @@ fun DetailScreen(
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             AssistChip(
-                                onClick = { SuiteTvIntegration.openAnimeInSuiteTv(context, anime) },
+                                onClick = { onOpenSuiteTv(anime) },
                                 leadingIcon = {
                                     Icon(
                                         Icons.Rounded.Tv,

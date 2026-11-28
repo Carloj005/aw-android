@@ -61,6 +61,7 @@ import com.carloj005.awanime.data.model.CalendarEntry
 import com.carloj005.awanime.data.model.DiscoveredSequel
 import com.carloj005.awanime.data.model.TrackedNotificationPrefs
 import com.carloj005.awanime.data.notifications.SequelTracker
+import com.carloj005.awanime.data.notifications.UserFranchiseProfile
 import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
 import com.carloj005.awanime.ui.CalendarFilter
 import com.carloj005.awanime.ui.CalendarUiState
@@ -77,7 +78,8 @@ fun CalendarScreen(
     state: CalendarUiState,
     favoriteKeys: Set<String>,
     watchingKeys: Set<String>,
-    userFranchiseKeys: Set<String>,
+    userFranchiseProfiles: Map<String, UserFranchiseProfile>,
+    allKnownAnimeIds: Set<String>,
     notifPrefs: TrackedNotificationPrefs,
     discoveredSequels: List<DiscoveredSequel>,
     onEnsureLoaded: () -> Unit,
@@ -108,9 +110,11 @@ fun CalendarScreen(
         val key = entry.anime.uniqueKey
         if (key in notifPrefs.explicitlyMutedKeys) return false
         if (key in notifPrefs.discoveredSequelKeys) return true
-        return key !in favoriteKeys &&
-            key !in watchingKeys &&
-            SequelTracker.matchesUserFranchise(entry.anime, userFranchiseKeys)
+        return SequelTracker.isCalendarFranchiseSequel(
+            candidate = entry.anime,
+            profiles = userFranchiseProfiles,
+            allKnownAnimeIds = allKnownAnimeIds,
+        )
     }
 
     fun matchesActiveFilter(entry: CalendarEntry): Boolean = when (state.filter) {
@@ -122,10 +126,10 @@ fun CalendarScreen(
 
     val safeDayIdx = state.selectedDayIndex.coerceIn(0, (state.days.size - 1).coerceAtLeast(0))
     val activeDay = state.days.getOrNull(safeDayIdx)
-    val dayCounts = remember(state.days, state.filter, favoriteKeys, watchingKeys, userFranchiseKeys, notifPrefs) {
+    val dayCounts = remember(state.days, state.filter, favoriteKeys, watchingKeys, userFranchiseProfiles, allKnownAnimeIds, notifPrefs) {
         state.days.map { day -> day.entries.count { matchesActiveFilter(it) } }
     }
-    val filteredEntries = remember(activeDay, state.filter, favoriteKeys, watchingKeys, userFranchiseKeys, notifPrefs) {
+    val filteredEntries = remember(activeDay, state.filter, favoriteKeys, watchingKeys, userFranchiseProfiles, allKnownAnimeIds, notifPrefs) {
         activeDay?.entries.orEmpty().filter { matchesActiveFilter(it) }
     }
     val totalMyAnimeThisWeek = remember(dayCounts) { dayCounts.sum() }

@@ -76,6 +76,7 @@ fun HistoryScreen(
     onResume: (WatchHistoryEntry) -> Unit,
     onOpenDetail: (AnimeItem) -> Unit,
     onToggleNotification: (AnimeItem) -> Unit,
+    onOpenSuiteTv: (AnimeItem) -> Unit,
     onRemoveHistory: (String) -> Unit,
     onRemoveFavorite: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -153,6 +154,7 @@ fun HistoryScreen(
                             onResume = { onResume(entry) },
                             onOpenDetail = { onOpenDetail(entry.anime) },
                             onToggleNotification = { onToggleNotification(entry.anime) },
+                            onOpenSuiteTv = { onOpenSuiteTv(entry.anime) },
                             onRemove = { onRemoveHistory(entry.uniqueKey) },
                         )
                     }
@@ -192,6 +194,7 @@ fun HistoryScreen(
                             isNotificationEnabled = notifOn,
                             onOpenDetail = { onOpenDetail(anime) },
                             onToggleNotification = { onToggleNotification(anime) },
+                            onOpenSuiteTv = { onOpenSuiteTv(anime) },
                             onRemove = { onRemoveFavorite(anime.uniqueKey) },
                         )
                     }
@@ -207,10 +210,10 @@ private fun FavoriteCard(
     isNotificationEnabled: Boolean,
     onOpenDetail: () -> Unit,
     onToggleNotification: () -> Unit,
+    onOpenSuiteTv: () -> Unit,
     onRemove: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
-    val context = LocalContext.current
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -291,7 +294,7 @@ private fun FavoriteCard(
                         )
                     }
                     FilledTonalIconButton(
-                        onClick = { SuiteTvIntegration.openAnimeInSuiteTv(context, anime) },
+                        onClick = onOpenSuiteTv,
                         modifier = Modifier.size(34.dp),
                     ) {
                         Icon(
@@ -320,6 +323,7 @@ private fun HistoryCard(
     onResume: () -> Unit,
     onOpenDetail: () -> Unit,
     onToggleNotification: () -> Unit,
+    onOpenSuiteTv: () -> Unit,
     onRemove: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -395,7 +399,6 @@ private fun HistoryCard(
                 )
                 Spacer(Modifier.height(10.dp))
                 val hasNextEpisode = !entry.isCaughtUp
-                val context = LocalContext.current
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -438,7 +441,7 @@ private fun HistoryCard(
                         )
                     }
                     FilledTonalIconButton(
-                        onClick = { SuiteTvIntegration.openAnimeInSuiteTv(context, entry.anime) },
+                        onClick = onOpenSuiteTv,
                         modifier = Modifier.size(36.dp),
                     ) {
                         Icon(

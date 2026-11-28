@@ -4,6 +4,15 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.4.1 — Segnalazioni Bug Anonime, Suite TV Diretto + Import JSON, Fix Calendario Lingua & Snackbar
+- **Segnalazione Bug & Idee Anonima (Zero Account GitHub)**: il modulo in *Impostazioni → Segnalazione Bug & Feedback* invia ora direttamente la segnalazione tramite relay serverless Cloudflare Worker (`aw-anime-reports`) che apre in automatico la issue sul repository senza richiedere account GitHub (con opzioni rapide Condividi, Copia e GitHub).
+- **Suite TV — Apertura Diretta Pagina Anime + Importazione JSON (Issue #5)**:
+  - Il tasto TV in Libreria, Scheda e Player ora risolve automaticamente l'ID **TheTVDB** dell'anime (via ARM / ani.zip) e apre direttamente la **pagina esatta dell'anime** dentro l'app nativa Suite TV (`https://www.suitetv.app/it/series/<tvdbId>`), senza copia-incolla! E nel raro fallback testuale pulisce correttamente anche i sottotitoli d'arco (es. `"Tougen Anki: Nikko Kegon Falls Arc"` → `"Tougen Anki"`).
+  - Aggiunta l'**Importazione JSON da Suite TV** (*Impostazioni → Integrazione Suite TV → Importa JSON*) compatibile con export **Suite TV / TV Time JSON** e **Trakt v2 JSON**, con merge senza perdita sulla cronologia locale.
+- **Fix Calendario "I miei" su lingua SUB/ITA**: se segui un anime solo in italiano (es. *JoJo Parte 7 ITA*), il calendario personalizzato non mostra più la versione duplicata in lingua originale (SUB), rispettando la lingua scelta per ogni franchise.
+- **Fix messaggi in Impostazioni (Snackbar auto-dismiss)**: i messaggi di stato (es. segnalazione inviata, cache svuotata, backup/import) ora compaiono in basso come Snackbar temporanea che scompare automaticamente invece di restare fissa in alto.
+- **Popup aggiornamenti con novità reali**: la finestra di aggiornamento ora formatta in modo pulito le funzionalità e i fix della release (eliminando i link grezzi `Full Changelog`), con estrazione automatica delle note da `README.md` in CI.
+
 ## Novità v1.4.0 — Calendario Personalizzato, Auto-Sequel, Random Anime, Ricerca Potenziata, Bug Report & Fix Suite TV
 - **Calendario Personalizzato & Notifiche per Singolo Anime**: la tab **Uscite** ora si apre di default su **I miei** (mostrando solo gli anime che stai guardando, i Preferiti e le nuove stagioni rilevate dei tuoi franchise, con conteggio per giorno e tasto rapido *"Mostra tutto il palinsesto"*). Ogni anime nel Calendario, nella Scheda e nella Libreria ha ora la sua campanella **🔔 / 🔕** per decidere esattamente di quali anime ricevere le notifiche.
 - **Rilevamento Automatico Prossima Stagione / Sequel**:

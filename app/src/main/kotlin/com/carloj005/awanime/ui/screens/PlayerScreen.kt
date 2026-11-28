@@ -156,6 +156,7 @@ fun PlayerScreen(
     pipCommands: Flow<PipCommand> = emptyFlow(),
     onPlayingStateChanged: (Boolean) -> Unit = {},
     onEnterPip: () -> Unit = {},
+    onOpenSuiteTv: (com.carloj005.awanime.data.model.AnimeItem) -> Unit = {},
     onClose: () -> Unit,
     playerVm: PlayerViewModel = viewModel(factory = PlayerViewModel.Factory),
 ) {
@@ -627,7 +628,7 @@ fun PlayerScreen(
                 outroCountdownCancelled = true
                 outroCountdownActive = false
                 persistNow(forceCompleted = true)
-                SuiteTvIntegration.openAnimeInSuiteTv(context, request.anime)
+                onOpenSuiteTv(request.anime)
             },
             onCancel = {
                 outroCountdownCancelled = true

@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "aw-anime-reports",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-28",
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  },
+  "vars": {
+    "GITHUB_REPO": "Carloj005/aw-android",
+    "RATE_LIMIT_MAX_PER_HOUR": "4"
+  }
+  // Secret configured outside git via Cloudflare Dashboard or `wrangler secret put GITHUB_TOKEN`
+  // Recommended scope: Fine-grained PAT on Carloj005/aw-android with ONLY Issues (Read and write).
+}

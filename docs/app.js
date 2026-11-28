@@ -1,12 +1,12 @@
 (() => {
   const REPO = "Carloj005/aw-android";
   const FALLBACK_RELEASE = {
-    tag_name: "v1.4.0",
-    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.0/AW-Anime-v1.4.0.apk",
-    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.0/AW-Anime-v1.4.0.apk.sha256",
+    tag_name: "v1.4.1",
+    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.1/AW-Anime-v1.4.1.apk",
+    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.1/AW-Anime-v1.4.1.apk.sha256",
     size_mb: "2.8 MB",
     date: "Ultima release",
-    notes: "Calendario personalizzato con campanella per singolo anime, rilevamento e salvataggio automatico nuove stagioni/sequel, pulsante Anime Random, ricerca potenziata con sigle/generi/ordinamento, segnalazione bug in-app e fix apertura nativa Suite TV.",
+    notes: "Segnalazione bug anonima senza account GitHub, apertura diretta pagina anime su Suite TV + importazione JSON da Suite TV, fix lingua SUB/ITA nel calendario personalizzato, Snackbar temporanee in Impostazioni e popup aggiornamenti formattato.",
   };
 
   // 1. Theme toggle (Dark / Light Material You)

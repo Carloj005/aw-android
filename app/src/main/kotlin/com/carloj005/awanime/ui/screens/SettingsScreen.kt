@@ -4,6 +4,8 @@ import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.CleaningServices
@@ -34,6 +37,7 @@ import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.Wifi
@@ -47,13 +51,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -87,6 +96,7 @@ sealed interface SettingsEvent {
     data object CheckFavoriteEpisodesNow : SettingsEvent
     data class ToggleSuiteTvQuickAction(val enabled: Boolean) : SettingsEvent
     data object ExportSuiteTvHistory : SettingsEvent
+    data object ImportSuiteTvHistory : SettingsEvent
     data object OpenSuiteTv : SettingsEvent
     data object OpenSupportedLinksSettings : SettingsEvent
     data class ToggleAutoCheckUpdates(val enabled: Boolean) : SettingsEvent
@@ -95,6 +105,12 @@ sealed interface SettingsEvent {
     data object ExportBackup : SettingsEvent
     data object ImportBackup : SettingsEvent
     data object ClearCache : SettingsEvent
+    data class SubmitBugReport(
+        val kind: ReportKind,
+        val title: String,
+        val description: String,
+        val onDone: (Boolean) -> Unit,
+    ) : SettingsEvent
     data class ShowFeedback(val message: String) : SettingsEvent
 }
 
@@ -105,19 +121,50 @@ fun SettingsScreen(
     cacheBytes: Long,
     activeDomain: String,
     feedbackMessage: String?,
+    onConsumeFeedback: () -> Unit,
     isCheckingFavorites: Boolean,
+    isImportingSuiteTv: Boolean,
+    isSubmittingBugReport: Boolean,
     isSuiteTvInstalled: Boolean,
     onEvent: (SettingsEvent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
     var showBugReportDialog by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(feedbackMessage) {
+        val msg = feedbackMessage ?: return@LaunchedEffect
+        onConsumeFeedback()
+        snackbarHostState.currentSnackbarData?.dismiss()
+        snackbarHostState.showSnackbar(
+            message = msg,
+            duration = SnackbarDuration.Short,
+            withDismissAction = true,
+        )
+    }
 
     if (showBugReportDialog) {
         BugReportDialog(
             activeDomain = activeDomain,
-            onDismiss = { showBugReportDialog = false },
+            isSubmitting = isSubmittingBugReport,
+            onDismiss = { if (!isSubmittingBugReport) showBugReportDialog = false },
+            onSubmitAnonymous = { kind, title, desc ->
+                onEvent(
+                    SettingsEvent.SubmitBugReport(
+                        kind = kind,
+                        title = title,
+                        description = desc,
+                        onDone = { success ->
+                            if (success) showBugReportDialog = false
+                        },
+                    )
+                )
+            },
+            onShareReport = { kind, title, desc ->
+                BugReportHelper.shareReport(context, kind, title, desc, activeDomain)
+            },
             onCopyReport = { kind, title, desc ->
                 val copied = BugReportHelper.copyReportToClipboard(context, kind, title, desc, activeDomain)
                 onEvent(
@@ -130,116 +177,103 @@ fun SettingsScreen(
             onSubmitGitHub = { kind, title, desc ->
                 val opened = BugReportHelper.openGitHubIssueForm(context, kind, title, desc, activeDomain)
                 showBugReportDialog = false
-                onEvent(
-                    SettingsEvent.ShowFeedback(
-                        if (opened) "Modulo segnalazione aperto su GitHub!"
-                        else "Impossibile aprire il browser: usa 'Copia' per salvare il report."
-                    )
-                )
+                if (!opened) {
+                    onEvent(SettingsEvent.ShowFeedback("Impossibile aprire il browser: usa 'Copia' o 'Condividi'."))
+                }
             },
         )
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(cs.background)
-            .statusBarsPadding(),
-    ) {
-        Row(
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        containerColor = cs.background,
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+    ) { innerPadding ->
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .fillMaxSize()
+                .background(cs.background)
+                .statusBarsPadding()
+                .padding(bottom = innerPadding.calculateBottomPadding()),
         ) {
-            IconButton(onClick = { onEvent(SettingsEvent.NavigateBack) }) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Indietro", tint = cs.onBackground)
-            }
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = "Impostazioni",
-                color = cs.onBackground,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.ExtraBold,
-            )
-        }
-
-        LazyColumn(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            if (!feedbackMessage.isNullOrBlank()) {
-                item {
-                    Card(
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = cs.primaryContainer),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = feedbackMessage,
-                            color = cs.onPrimaryContainer,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(14.dp),
-                        )
-                    }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { onEvent(SettingsEvent.NavigateBack) }) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Indietro", tint = cs.onBackground)
                 }
-            }
-
-            item {
-                AppearanceSection(settings = settings, onEvent = onEvent)
-            }
-
-            item {
-                PlayerPreferencesSection(settings = settings, onEvent = onEvent)
-            }
-
-            item {
-                FavoriteNotificationsSection(
-                    settings = settings,
-                    isCheckingFavorites = isCheckingFavorites,
-                    onEvent = onEvent,
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = "Impostazioni",
+                    color = cs.onBackground,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.ExtraBold,
                 )
             }
 
-            item {
-                SuiteTvIntegrationSection(
-                    settings = settings,
-                    isSuiteTvInstalled = isSuiteTvInstalled,
-                    onEvent = onEvent,
-                )
-            }
+            LazyColumn(
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                item {
+                    AppearanceSection(settings = settings, onEvent = onEvent)
+                }
 
-            item {
-                NetworkAndStorageSection(
-                    settings = settings,
-                    cacheBytes = cacheBytes,
-                    onEvent = onEvent,
-                )
-            }
+                item {
+                    PlayerPreferencesSection(settings = settings, onEvent = onEvent)
+                }
 
-            item {
-                BackupSection(onEvent = onEvent)
-            }
+                item {
+                    FavoriteNotificationsSection(
+                        settings = settings,
+                        isCheckingFavorites = isCheckingFavorites,
+                        onEvent = onEvent,
+                    )
+                }
 
-            item {
-                AutoUpdateSection(
-                    settings = settings,
-                    updateState = updateState,
-                    onEvent = onEvent,
-                )
-            }
+                item {
+                    SuiteTvIntegrationSection(
+                        settings = settings,
+                        isSuiteTvInstalled = isSuiteTvInstalled,
+                        isImportingSuiteTv = isImportingSuiteTv,
+                        onEvent = onEvent,
+                    )
+                }
 
-            item {
-                FeedbackAndBugReportSection(onOpenBugDialog = { showBugReportDialog = true })
-            }
+                item {
+                    NetworkAndStorageSection(
+                        settings = settings,
+                        cacheBytes = cacheBytes,
+                        onEvent = onEvent,
+                    )
+                }
 
-            item {
-                SecurityInfoSection()
-            }
+                item {
+                    BackupSection(onEvent = onEvent)
+                }
 
-            item { Spacer(Modifier.height(16.dp)) }
+                item {
+                    AutoUpdateSection(
+                        settings = settings,
+                        updateState = updateState,
+                        onEvent = onEvent,
+                    )
+                }
+
+                item {
+                    FeedbackAndBugReportSection(onOpenBugDialog = { showBugReportDialog = true })
+                }
+
+                item {
+                    SecurityInfoSection()
+                }
+
+                item { Spacer(Modifier.height(16.dp)) }
+            }
         }
     }
 }
@@ -368,15 +402,16 @@ private fun FavoriteNotificationsSection(
 private fun SuiteTvIntegrationSection(
     settings: AppSettings,
     isSuiteTvInstalled: Boolean,
+    isImportingSuiteTv: Boolean,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
     SettingsSectionCard(title = "Integrazione Suite TV", icon = Icons.Rounded.Tv) {
         Text(
             text = if (isSuiteTvInstalled) {
-                "App Suite TV rilevata sul dispositivo: il tasto TV apre direttamente l'app nativa (e copia il titolo negli appunti per cercarlo al volo)."
+                "App Suite TV rilevata: il tasto TV apre direttamente la scheda dell'anime nell'app nativa. Puoi anche esportare o importare la cronologia JSON."
             } else {
-                "Traccia serie e anime su suitetv.app/it o esporta la tua cronologia per importarla in Suite TV."
+                "Traccia serie e anime su suitetv.app/it: esporta la tua cronologia per Suite TV oppure importa file JSON (Suite TV / Trakt / TV Time) in AW Anime."
             },
             color = cs.onSurfaceVariant,
             fontSize = 12.sp,
@@ -393,6 +428,7 @@ private fun SuiteTvIntegrationSection(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             FilledTonalButton(
                 onClick = { onEvent(SettingsEvent.ExportSuiteTvHistory) },
+                enabled = !isImportingSuiteTv,
                 shape = CircleShape,
                 modifier = Modifier.weight(1f),
             ) {
@@ -401,22 +437,41 @@ private fun SuiteTvIntegrationSection(
                 Text("Esporta JSON", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             }
             FilledTonalButton(
-                onClick = { onEvent(SettingsEvent.OpenSuiteTv) },
+                onClick = { onEvent(SettingsEvent.ImportSuiteTvHistory) },
+                enabled = !isImportingSuiteTv,
                 shape = CircleShape,
                 modifier = Modifier.weight(1f),
             ) {
-                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                if (isImportingSuiteTv) {
+                    CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Rounded.FileDownload, contentDescription = null, modifier = Modifier.size(16.dp))
+                }
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = if (isSuiteTvInstalled) "Apri App" else "Apri Web",
+                    text = if (isImportingSuiteTv) "Importo..." else "Importa JSON",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
         }
         Spacer(Modifier.height(8.dp))
+        FilledTonalButton(
+            onClick = { onEvent(SettingsEvent.OpenSuiteTv) },
+            shape = CircleShape,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = if (isSuiteTvInstalled) "Apri app Suite TV" else "Apri Suite TV Web",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         Text(
-            text = "Importazione: apri Suite TV → Impostazioni → Importa → Trakt e seleziona il file JSON esportato.",
+            text = "Esportazione: in Suite TV vai su Impostazioni → Importa → Trakt. Importazione: seleziona un file JSON esportato da Suite TV, Trakt o TV Time.",
             color = cs.onSurfaceVariant.copy(alpha = 0.85f),
             fontSize = 11.sp,
             lineHeight = 15.sp,
@@ -596,7 +651,7 @@ private fun FeedbackAndBugReportSection(onOpenBugDialog: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     SettingsSectionCard(title = "Segnalazione Bug & Feedback", icon = Icons.Rounded.BugReport) {
         Text(
-            text = "Hai trovato un problema o vuoi proporre una nuova funzione? Invia una segnalazione precompilata su GitHub con la diagnostica di base del dispositivo (nessun dato personale).",
+            text = "Hai trovato un problema o vuoi proporre una nuova funzione? Invia la segnalazione direttamente da qui in modo anonimo — non serve alcun account GitHub.",
             color = cs.onSurfaceVariant,
             fontSize = 12.sp,
             lineHeight = 17.sp,
@@ -613,10 +668,14 @@ private fun FeedbackAndBugReportSection(onOpenBugDialog: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BugReportDialog(
     activeDomain: String,
+    isSubmitting: Boolean,
     onDismiss: () -> Unit,
+    onSubmitAnonymous: (ReportKind, String, String) -> Unit,
+    onShareReport: (ReportKind, String, String) -> Unit,
     onCopyReport: (ReportKind, String, String) -> Unit,
     onSubmitGitHub: (ReportKind, String, String) -> Unit,
 ) {
@@ -624,7 +683,10 @@ private fun BugReportDialog(
     var selectedKind by remember { mutableStateOf(ReportKind.BUG) }
     var title by rememberSaveable { mutableStateOf("") }
     var description by rememberSaveable { mutableStateOf("") }
-    val canSubmit = title.trim().isNotEmpty() || description.trim().isNotEmpty()
+    val canSubmit = !isSubmitting && (title.trim().length >= 3 || description.trim().length >= 5)
+    val safeTitle = title.trim().ifBlank {
+        if (selectedKind == ReportKind.BUG) "Segnalazione problema" else "Suggerimento"
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -645,6 +707,7 @@ private fun BugReportDialog(
                         SegmentedButton(
                             selected = selectedKind == kind,
                             onClick = { selectedKind = kind },
+                            enabled = !isSubmitting,
                             shape = SegmentedButtonDefaults.itemShape(idx, ReportKind.entries.size),
                         ) {
                             Text(kind.label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -653,7 +716,8 @@ private fun BugReportDialog(
                 }
                 OutlinedTextField(
                     value = title,
-                    onValueChange = { title = it.take(120) },
+                    onValueChange = { title = it.take(110) },
+                    enabled = !isSubmitting,
                     label = { Text("Titolo breve") },
                     placeholder = {
                         Text(
@@ -667,7 +731,8 @@ private fun BugReportDialog(
                 )
                 OutlinedTextField(
                     value = description,
-                    onValueChange = { description = it.take(1500) },
+                    onValueChange = { description = it.take(2000) },
+                    enabled = !isSubmitting,
                     label = { Text("Descrizione") },
                     placeholder = { Text("Spiega cosa è successo o come riprodurlo...") },
                     minLines = 3,
@@ -676,47 +741,69 @@ private fun BugReportDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    text = "Allegati automatici: AW Anime v${BuildConfig.VERSION_NAME} • Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) • $activeDomain",
+                    text = "Invio anonimo senza account GitHub. Allegati tecnici: AW Anime v${BuildConfig.VERSION_NAME} • Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) • $activeDomain",
                     color = cs.onSurfaceVariant,
                     fontSize = 11.sp,
                     lineHeight = 15.sp,
                 )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    TextButton(
+                        onClick = { onShareReport(selectedKind, safeTitle, description) },
+                        enabled = canSubmit,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Condividi", fontSize = 12.sp)
+                    }
+                    TextButton(
+                        onClick = { onCopyReport(selectedKind, safeTitle, description) },
+                        enabled = canSubmit,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Copia", fontSize = 12.sp)
+                    }
+                    TextButton(
+                        onClick = { onSubmitGitHub(selectedKind, safeTitle, description) },
+                        enabled = canSubmit,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("GitHub", fontSize = 12.sp)
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
-                onClick = {
-                    val safeTitle = title.trim().ifBlank {
-                        if (selectedKind == ReportKind.BUG) "Segnalazione problema" else "Suggerimento"
-                    }
-                    onSubmitGitHub(selectedKind, safeTitle, description)
-                },
+                onClick = { onSubmitAnonymous(selectedKind, safeTitle, description) },
                 enabled = canSubmit,
                 shape = CircleShape,
             ) {
-                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Invia su GitHub")
+                if (isSubmitting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = cs.onPrimary,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Invio...")
+                } else {
+                    Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Invia")
+                }
             }
         },
         dismissButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(
-                    onClick = {
-                        val safeTitle = title.trim().ifBlank {
-                            if (selectedKind == ReportKind.BUG) "Segnalazione problema" else "Suggerimento"
-                        }
-                        onCopyReport(selectedKind, safeTitle, description)
-                    },
-                    enabled = canSubmit,
-                ) {
-                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Copia")
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("Annulla")
-                }
+            TextButton(onClick = onDismiss, enabled = !isSubmitting) {
+                Text("Annulla")
             }
         },
     )

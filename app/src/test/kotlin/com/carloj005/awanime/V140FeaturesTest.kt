@@ -2,6 +2,7 @@ package com.carloj005.awanime
 
 import com.carloj005.awanime.data.integrations.BugReportHelper
 import com.carloj005.awanime.data.integrations.ReportKind
+import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.SearchSortOrder
 import com.carloj005.awanime.data.model.TrackedNotificationPrefs
@@ -233,5 +234,105 @@ class V140FeaturesTest {
         assertEquals("mostra solo gli anime seguiti con campanella per singolo titolo.", entries[0].text)
         assertEquals("Fix Suite TV", entries[1].title)
         assertEquals("apre direttamente com.nicolasbordeaux.suitetv.", entries[1].text)
+    }
+
+    @Test
+    fun sequelTracker_calendarLanguageFilterExcludesSubWhenUserOnlyWatchesIta() {
+        val jojo7Ita = AnimeItem(
+            id = "7808",
+            title = "Le Bizzarre Avventure di JoJo: Steel Ball Run (ITA)",
+            year = 2026,
+            isDub = true,
+        )
+        val jojo7Sub = AnimeItem(
+            id = "7808",
+            title = "Le Bizzarre Avventure di JoJo: Steel Ball Run",
+            year = 2026,
+            isDub = false,
+        )
+        val jojo8Sub = AnimeItem(
+            id = "9900",
+            title = "Le Bizzarre Avventure di JoJo: JoJolion",
+            year = 2028,
+            isDub = false,
+        )
+        val jojo8Ita = AnimeItem(
+            id = "9900",
+            title = "Le Bizzarre Avventure di JoJo: JoJolion (ITA)",
+            year = 2028,
+            isDub = true,
+        )
+
+        val profiles = SequelTracker.buildUserFranchiseProfiles(listOf(jojo7Ita))
+        val knownIds = setOf(jojo7Ita.id)
+
+        // Same anime in SUB must NEVER appear in personalized Calendar
+        assertFalse(SequelTracker.isCalendarFranchiseSequel(jojo7Sub, profiles, knownIds))
+        // Future season in SUB must NOT appear when user only follows ITA
+        assertFalse(SequelTracker.isCalendarFranchiseSequel(jojo8Sub, profiles, knownIds))
+        // Future season in ITA MUST appear
+        assertTrue(SequelTracker.isCalendarFranchiseSequel(jojo8Ita, profiles, knownIds))
+    }
+
+    @Test
+    fun suiteTvIntegration_cleansArcSubtitlesBuildsDirectUrlsAndImportsJsonFormats() {
+        assertEquals("Tougen Anki", SuiteTvIntegration.cleanTitleForSuiteTv("Tougen Anki: Nikko Kegon Falls Arc"))
+        assertEquals(
+            "Le Bizzarre Avventure di JoJo",
+            SuiteTvIntegration.cleanTitleForSuiteTv("Le Bizzarre Avventure di JoJo: Steel Ball Run 2nd - 3rd Stage (ITA)"),
+        )
+        assertEquals("Solo Leveling", SuiteTvIntegration.cleanTitleForSuiteTv("Solo Leveling 2: Arise from the Shadow"))
+        assertEquals("Mob Psycho 100", SuiteTvIntegration.cleanTitleForSuiteTv("Mob Psycho 100"))
+        assertEquals("Re:Zero", SuiteTvIntegration.cleanTitleForSuiteTv("Re:Zero - Starting Life in Another World"))
+        assertEquals("https://www.suitetv.app/it/series/449843", SuiteTvIntegration.buildDirectSeriesUrl(449843))
+
+        // 1. Trakt v2 JSON import
+        val traktJson = """
+            [
+              {
+                "watched_at": "2026-11-20T18:00:00.000Z",
+                "action": "watch",
+                "type": "episode",
+                "episode": { "season": 2, "number": 1 },
+                "show": { "title": "Solo Leveling", "year": 2025, "ids": { "tvdb": 389597 } }
+              },
+              {
+                "watched_at": "2026-11-21T18:00:00.000Z",
+                "action": "watch",
+                "type": "episode",
+                "episode": { "season": 2, "number": 2 },
+                "show": { "title": "Solo Leveling", "year": 2025, "ids": { "tvdb": 389597 } }
+              }
+            ]
+        """.trimIndent()
+        val traktParsed = SuiteTvIntegration.parseImportedSuiteTvJson(traktJson)
+        assertEquals(1, traktParsed.size)
+        assertEquals("Solo Leveling", traktParsed[0].title)
+        assertEquals(2, traktParsed[0].seasonNumber)
+        assertEquals(389597, traktParsed[0].tvdbId)
+        assertEquals(setOf(1, 2), traktParsed[0].watchedEpisodes)
+
+        // 2. Suite TV / TV Time Liberator JSON import (skips unwatched and specials)
+        val tvTimeJson = """
+            {
+              "shows": [
+                {
+                  "title": "Tougen Anki",
+                  "id": { "tvdb": 449843 },
+                  "episodes": [
+                    { "number": 1, "special": false, "is_watched": true, "watched_at": "2026-10-01 20:00:00" },
+                    { "number": 2, "special": false, "is_watched": true, "watched_at": "2026-10-08 20:00:00" },
+                    { "number": 3, "special": false, "is_watched": false },
+                    { "number": 1, "special": true, "is_watched": true }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        val tvTimeParsed = SuiteTvIntegration.parseImportedSuiteTvJson(tvTimeJson)
+        assertEquals(1, tvTimeParsed.size)
+        assertEquals("Tougen Anki", tvTimeParsed[0].title)
+        assertEquals(449843, tvTimeParsed[0].tvdbId)
+        assertEquals(setOf(1, 2), tvTimeParsed[0].watchedEpisodes)
     }
 }

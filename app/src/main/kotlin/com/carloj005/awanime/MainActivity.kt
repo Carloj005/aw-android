@@ -97,6 +97,7 @@ import com.carloj005.awanime.data.model.LatestFilter
 import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.formatBytes
 import com.carloj005.awanime.data.network.SearchUtils
+import com.carloj005.awanime.data.notifications.SequelTracker
 import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
 import com.carloj005.awanime.data.update.AppUpdater
 import com.carloj005.awanime.ui.AppViewModel
@@ -433,21 +434,20 @@ private fun AwAnimeRoot(
     val updateState by vm.updateState.collectAsStateWithLifecycle()
     val settingsFeedback by vm.settingsFeedback.collectAsStateWithLifecycle()
     val isCheckingFavorites by vm.isCheckingFavorites.collectAsStateWithLifecycle()
+    val isImportingSuiteTv by vm.isImportingSuiteTv.collectAsStateWithLifecycle()
+    val isSubmittingBugReport by vm.isSubmittingBugReport.collectAsStateWithLifecycle()
     val cacheSizeBytes by vm.cacheSizeBytes.collectAsStateWithLifecycle()
 
     val favoriteKeys = remember(favorites) { favorites.map { it.uniqueKey }.toSet() }
     val watchingKeys = remember(history) { history.map { it.uniqueKey }.toSet() }
-    val userFranchiseKeys = remember(favorites, history) {
+    val allKnownAnimeIds = remember(favorites, history) {
         buildSet {
-            favorites.forEach { fav ->
-                val fk = SearchUtils.extractFranchiseKey(fav.title)
-                if (fk.length >= 4) add(fk)
-            }
-            history.forEach { h ->
-                val fk = SearchUtils.extractFranchiseKey(h.anime.title)
-                if (fk.length >= 4) add(fk)
-            }
+            favorites.forEach { if (it.id.isNotBlank()) add(it.id) }
+            history.forEach { if (it.anime.id.isNotBlank()) add(it.anime.id) }
         }
+    }
+    val userFranchiseProfiles = remember(favorites, history) {
+        SequelTracker.buildUserFranchiseProfiles(favorites + history.map { it.anime })
     }
     val isSuiteTvInstalled = remember(context, showSettings) { SuiteTvIntegration.isSuiteTvInstalled(context) }
 
@@ -472,6 +472,14 @@ private fun AwAnimeRoot(
     ) { uri ->
         if (uri != null) {
             vm.exportSuiteTvHistoryToUri(context.contentResolver, uri)
+        }
+    }
+
+    val importSuiteTvLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            vm.importSuiteTvHistoryFromUri(context.contentResolver, uri)
         }
     }
 
@@ -514,6 +522,7 @@ private fun AwAnimeRoot(
             pipCommands = pipCommands,
             onPlayingStateChanged = onPlayingStateChanged,
             onEnterPip = onEnterPip,
+            onOpenSuiteTv = { vm.openAnimeInSuiteTv(context, it) },
             onClose = { vm.closePlayer() },
         )
         return
@@ -528,7 +537,10 @@ private fun AwAnimeRoot(
             cacheBytes = cacheSizeBytes,
             activeDomain = homeState.activeDomain,
             feedbackMessage = settingsFeedback,
+            onConsumeFeedback = { vm.clearSettingsFeedback() },
             isCheckingFavorites = isCheckingFavorites,
+            isImportingSuiteTv = isImportingSuiteTv,
+            isSubmittingBugReport = isSubmittingBugReport,
             isSuiteTvInstalled = isSuiteTvInstalled,
             onEvent = { event ->
                 vm.onSettingsEvent(
@@ -540,6 +552,9 @@ private fun AwAnimeRoot(
                     },
                     onLaunchExportSuiteTv = {
                         exportSuiteTvLauncher.launch("aw-anime-suitetv-trakt.json")
+                    },
+                    onLaunchImportSuiteTv = {
+                        importSuiteTvLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                     },
                     onOpenSuiteTv = { SuiteTvIntegration.openSuiteTvAppOrWeb(context) },
                     onOpenSupportedLinksSettings = { AnimeUnityDeepLinkParser.openSupportedLinksSettings(context) },
@@ -578,6 +593,7 @@ private fun AwAnimeRoot(
             onToggleFavorite = { vm.toggleFavorite(it) },
             onToggleNotification = { vm.toggleAnimeNotification(it) },
             onOpenRelatedAnime = { vm.openAnimeDetail(it) },
+            onOpenSuiteTv = { vm.openAnimeInSuiteTv(context, it) },
             onSwitchLanguage = { vm.switchDetailLanguage(it) },
             onPlayEpisode = { anime, eps, idx -> vm.startPlayback(anime, eps, idx) },
             onDownloadEpisode = { anime, ep -> vm.enqueueDownload(anime, ep) },
@@ -643,7 +659,8 @@ private fun AwAnimeRoot(
                     state = calendarState,
                     favoriteKeys = favoriteKeys,
                     watchingKeys = watchingKeys,
-                    userFranchiseKeys = userFranchiseKeys,
+                    userFranchiseProfiles = userFranchiseProfiles,
+                    allKnownAnimeIds = allKnownAnimeIds,
                     notifPrefs = notifPrefs,
                     discoveredSequels = discoveredSequels,
                     onEnsureLoaded = { vm.ensureCalendarLoaded() },
@@ -680,6 +697,7 @@ private fun AwAnimeRoot(
                     onResume = { vm.resumeFromHistory(it) },
                     onOpenDetail = { vm.openAnimeDetail(it) },
                     onToggleNotification = { vm.toggleAnimeNotification(it) },
+                    onOpenSuiteTv = { vm.openAnimeInSuiteTv(context, it) },
                     onRemoveHistory = { vm.removeHistory(it) },
                     onRemoveFavorite = { vm.removeFavorite(it) },
                 )

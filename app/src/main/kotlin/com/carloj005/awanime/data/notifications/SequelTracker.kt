@@ -5,11 +5,21 @@ import com.carloj005.awanime.data.model.DiscoveredSequel
 import com.carloj005.awanime.data.network.SearchUtils
 import java.util.Locale
 
+data class UserFranchiseProfile(
+    val knownIds: Set<String>,
+    val prefersSub: Boolean,
+    val prefersDub: Boolean,
+    val maxYear: Int,
+    val maxPart: Int,
+    val maxId: Int,
+)
+
 /**
  * Pure franchise & sequel matcher.
  * - Resolves the immediate next season from AnimeUnity's `relatedAnimes` list.
  * - Detects newly announced / airing sequels in Calendar and Latest feeds for franchises the user
- *   already watched, finished, or saved in Favorites (e.g. Solo Leveling S1 -> S2 -> future S3).
+ *   already watched, finished, or saved in Favorites (e.g. Solo Leveling S1 -> S2 -> future S3),
+ *   strictly honoring the user's preferred audio language (SUB vs ITA) for each franchise.
  */
 object SequelTracker {
 
@@ -66,6 +76,82 @@ object SequelTracker {
     }
 
     /**
+     * Builds per-franchise language & latest-season profiles from the user's library (Favorites + History).
+     */
+    fun buildUserFranchiseProfiles(userLibrary: List<AnimeItem>): Map<String, UserFranchiseProfile> {
+        if (userLibrary.isEmpty()) return emptyMap()
+
+        val result = LinkedHashMap<String, UserFranchiseProfile>()
+        for (item in userLibrary) {
+            val fKey = SearchUtils.extractFranchiseKey(item.title)
+            if (fKey.length < 4) continue
+            val yr = item.year ?: 0
+            val part = SearchUtils.extractPartNumber(item.title)
+            val idInt = item.id.toIntOrNull() ?: 0
+            val prev = result[fKey]
+            if (prev == null) {
+                result[fKey] = UserFranchiseProfile(
+                    knownIds = if (item.id.isNotBlank()) setOf(item.id) else emptySet(),
+                    prefersSub = !item.isDub,
+                    prefersDub = item.isDub,
+                    maxYear = yr,
+                    maxPart = part,
+                    maxId = idInt,
+                )
+            } else {
+                result[fKey] = prev.copy(
+                    knownIds = if (item.id.isNotBlank()) prev.knownIds + item.id else prev.knownIds,
+                    prefersSub = prev.prefersSub || !item.isDub,
+                    prefersDub = prev.prefersDub || item.isDub,
+                    maxYear = maxOf(prev.maxYear, yr),
+                    maxPart = maxOf(prev.maxPart, part),
+                    maxId = maxOf(prev.maxId, idInt),
+                )
+            }
+        }
+        return result
+    }
+
+    /**
+     * Returns true ONLY when a calendar candidate is genuinely a newer sequel of a franchise the
+     * user follows AND matches the user's preferred audio language (SUB vs ITA) for that franchise.
+     *
+     * Crucially returns false if:
+     * - The same `anime.id` is already in the user's library (e.g. user watches JoJo Part 7 ITA ->
+     *   JoJo Part 7 SUB has the same ID and must NOT appear in "I miei").
+     * - The candidate's language (SUB/ITA) does not match what the user watches for that franchise.
+     */
+    fun isCalendarFranchiseSequel(
+        candidate: AnimeItem,
+        profiles: Map<String, UserFranchiseProfile>,
+        allKnownAnimeIds: Set<String>,
+    ): Boolean {
+        if (candidate.id.isBlank()) return false
+        if (candidate.id in allKnownAnimeIds) return false
+
+        val fKey = SearchUtils.extractFranchiseKey(candidate.title)
+        if (fKey.length < 4) return false
+        val profile = profiles[fKey] ?: return false
+        if (candidate.id in profile.knownIds) return false
+
+        val languageMatches = (candidate.isDub && profile.prefersDub) ||
+            (!candidate.isDub && profile.prefersSub)
+        if (!languageMatches) return false
+
+        val candYear = candidate.year ?: 0
+        val candPart = SearchUtils.extractPartNumber(candidate.title)
+        val candId = candidate.id.toIntOrNull() ?: 0
+
+        return when {
+            profile.maxYear > 0 && candYear > profile.maxYear -> true
+            profile.maxYear > 0 && candYear == profile.maxYear && candPart > profile.maxPart -> true
+            profile.maxYear == 0 && candId > profile.maxId -> true
+            candYear == 0 && candId > profile.maxId -> true
+            else -> false
+        }
+    }
+
+    /**
      * Detects new seasons / sequels appearing in live feeds (Calendar or Latest Episodes) that
      * belong to a franchise the user already watched or favorited, excluding items already known
      * or previously discovered.
@@ -78,45 +164,23 @@ object SequelTracker {
     ): List<DiscoveredSequel> {
         if (userLibrary.isEmpty() || feedCandidates.isEmpty()) return emptyList()
 
-        data class FranchiseAnchor(
-            val latestAnime: AnimeItem,
-            val maxYear: Int,
-            val maxPart: Int,
-            val maxId: Int,
-            val knownIds: MutableSet<String>,
-            val prefersDub: Boolean,
-            val prefersSub: Boolean,
-        )
+        val profiles = buildUserFranchiseProfiles(userLibrary)
+        val allKnownIds = userLibrary.mapNotNull { it.id.takeIf { id -> id.isNotBlank() } }.toSet()
 
-        val anchors = LinkedHashMap<String, FranchiseAnchor>()
+        val latestByFranchise = LinkedHashMap<String, AnimeItem>()
         for (item in userLibrary) {
             val fKey = SearchUtils.extractFranchiseKey(item.title)
             if (fKey.length < 4) continue
-            val yr = item.year ?: 0
-            val part = SearchUtils.extractPartNumber(item.title)
-            val idInt = item.id.toIntOrNull() ?: 0
-            val prev = anchors[fKey]
+            val prev = latestByFranchise[fKey]
             if (prev == null) {
-                anchors[fKey] = FranchiseAnchor(
-                    latestAnime = item,
-                    maxYear = yr,
-                    maxPart = part,
-                    maxId = idInt,
-                    knownIds = mutableSetOf(item.id),
-                    prefersDub = item.isDub,
-                    prefersSub = !item.isDub,
-                )
+                latestByFranchise[fKey] = item
             } else {
-                prev.knownIds.add(item.id)
-                val isNewer = yr > prev.maxYear || (yr == prev.maxYear && (part > prev.maxPart || idInt > prev.maxId))
-                anchors[fKey] = prev.copy(
-                    latestAnime = if (isNewer) item else prev.latestAnime,
-                    maxYear = maxOf(prev.maxYear, yr),
-                    maxPart = maxOf(prev.maxPart, part),
-                    maxId = maxOf(prev.maxId, idInt),
-                    prefersDub = prev.prefersDub || item.isDub,
-                    prefersSub = prev.prefersSub || !item.isDub,
-                )
+                val yr = item.year ?: 0
+                val prevYr = prev.year ?: 0
+                val isNewer = yr > prevYr ||
+                    (yr == prevYr && SearchUtils.extractPartNumber(item.title) > SearchUtils.extractPartNumber(prev.title)) ||
+                    (yr == prevYr && (item.id.toIntOrNull() ?: 0) > (prev.id.toIntOrNull() ?: 0))
+                if (isNewer) latestByFranchise[fKey] = item
             }
         }
 
@@ -128,38 +192,15 @@ object SequelTracker {
             if (cand.uniqueKey in knownUserKeys || cand.uniqueKey in alreadyDiscoveredKeys) continue
             if (!emittedKeys.add(cand.uniqueKey)) continue
 
-            val candFKey = SearchUtils.extractFranchiseKey(cand.title)
-            if (candFKey.length < 4) continue
-            val anchor = anchors[candFKey] ?: continue
-            if (cand.id in anchor.knownIds) continue
-
-            // Match user's preferred audio language for this franchise
-            val languageMatches = (cand.isDub && anchor.prefersDub) || (!cand.isDub && anchor.prefersSub)
-            if (!languageMatches) continue
-
-            val candYear = cand.year ?: 0
-            val candPart = SearchUtils.extractPartNumber(cand.title)
-            val candId = cand.id.toIntOrNull() ?: 0
-
-            val isNewerSeason = when {
-                anchor.maxYear > 0 && candYear > anchor.maxYear -> true
-                anchor.maxYear > 0 && candYear == anchor.maxYear && candPart > anchor.maxPart -> true
-                anchor.maxYear == 0 && candId > anchor.maxId -> true
-                candYear == 0 && candId > anchor.maxId -> true
-                else -> false
-            }
-            if (isNewerSeason) {
-                discovered.add(DiscoveredSequel(parentAnime = anchor.latestAnime, newSeason = cand))
-            }
+            if (!isCalendarFranchiseSequel(cand, profiles, allKnownIds)) continue
+            val fKey = SearchUtils.extractFranchiseKey(cand.title)
+            val parent = latestByFranchise[fKey] ?: continue
+            discovered.add(DiscoveredSequel(parentAnime = parent, newSeason = cand))
         }
 
         return discovered
     }
 
-    /**
-     * Checks if a calendar/feed candidate belongs to any franchise currently in the user's library
-     * (used to highlight upcoming sequels directly inside the personalized Calendar tab).
-     */
     fun matchesUserFranchise(
         candidate: AnimeItem,
         userFranchiseKeys: Set<String>,
