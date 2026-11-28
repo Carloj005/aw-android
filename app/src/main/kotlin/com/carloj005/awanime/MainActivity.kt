@@ -435,6 +435,8 @@ private fun AwAnimeRoot(
     val settingsFeedback by vm.settingsFeedback.collectAsStateWithLifecycle()
     val isCheckingFavorites by vm.isCheckingFavorites.collectAsStateWithLifecycle()
     val isImportingSuiteTv by vm.isImportingSuiteTv.collectAsStateWithLifecycle()
+    val isExportingSuiteTv by vm.isExportingSuiteTv.collectAsStateWithLifecycle()
+    val suiteTvSyncProgress by vm.suiteTvSyncProgress.collectAsStateWithLifecycle()
     val isSubmittingBugReport by vm.isSubmittingBugReport.collectAsStateWithLifecycle()
     val cacheSizeBytes by vm.cacheSizeBytes.collectAsStateWithLifecycle()
 
@@ -468,7 +470,7 @@ private fun AwAnimeRoot(
     }
 
     val exportSuiteTvLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json"),
+        contract = ActivityResultContracts.CreateDocument("application/zip"),
     ) { uri ->
         if (uri != null) {
             vm.exportSuiteTvHistoryToUri(context.contentResolver, uri)
@@ -540,6 +542,8 @@ private fun AwAnimeRoot(
             onConsumeFeedback = { vm.clearSettingsFeedback() },
             isCheckingFavorites = isCheckingFavorites,
             isImportingSuiteTv = isImportingSuiteTv,
+            isExportingSuiteTv = isExportingSuiteTv,
+            suiteTvSyncProgress = suiteTvSyncProgress,
             isSubmittingBugReport = isSubmittingBugReport,
             isSuiteTvInstalled = isSuiteTvInstalled,
             onEvent = { event ->
@@ -551,10 +555,12 @@ private fun AwAnimeRoot(
                         importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                     },
                     onLaunchExportSuiteTv = {
-                        exportSuiteTvLauncher.launch("aw-anime-suitetv-trakt.json")
+                        exportSuiteTvLauncher.launch("suite-export-aw-anime.zip")
                     },
                     onLaunchImportSuiteTv = {
-                        importSuiteTvLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        importSuiteTvLauncher.launch(
+                            arrayOf("application/zip", "application/json", "application/x-ndjson", "text/plain", "*/*")
+                        )
                     },
                     onOpenSuiteTv = { SuiteTvIntegration.openSuiteTvAppOrWeb(context) },
                     onOpenSupportedLinksSettings = { AnimeUnityDeepLinkParser.openSupportedLinksSettings(context) },

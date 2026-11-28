@@ -124,6 +124,8 @@ fun SettingsScreen(
     onConsumeFeedback: () -> Unit,
     isCheckingFavorites: Boolean,
     isImportingSuiteTv: Boolean,
+    isExportingSuiteTv: Boolean,
+    suiteTvSyncProgress: String?,
     isSubmittingBugReport: Boolean,
     isSuiteTvInstalled: Boolean,
     onEvent: (SettingsEvent) -> Unit,
@@ -240,6 +242,8 @@ fun SettingsScreen(
                         settings = settings,
                         isSuiteTvInstalled = isSuiteTvInstalled,
                         isImportingSuiteTv = isImportingSuiteTv,
+                        isExportingSuiteTv = isExportingSuiteTv,
+                        suiteTvSyncProgress = suiteTvSyncProgress,
                         onEvent = onEvent,
                     )
                 }
@@ -403,15 +407,18 @@ private fun SuiteTvIntegrationSection(
     settings: AppSettings,
     isSuiteTvInstalled: Boolean,
     isImportingSuiteTv: Boolean,
+    isExportingSuiteTv: Boolean,
+    suiteTvSyncProgress: String?,
     onEvent: (SettingsEvent) -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
+    val isBusy = isImportingSuiteTv || isExportingSuiteTv
     SettingsSectionCard(title = "Integrazione Suite TV", icon = Icons.Rounded.Tv) {
         Text(
             text = if (isSuiteTvInstalled) {
-                "App Suite TV rilevata: il tasto TV apre direttamente la scheda dell'anime nell'app nativa. Puoi anche esportare o importare la cronologia JSON."
+                "App Suite TV rilevata: il tasto TV apre direttamente la scheda dell'anime nell'app. Puoi anche importare o esportare l'archivio nativo Suite TV (.zip)."
             } else {
-                "Traccia serie e anime su suitetv.app/it: esporta la tua cronologia per Suite TV oppure importa file JSON (Suite TV / Trakt / TV Time) in AW Anime."
+                "Sincronizza gli episodi visti con Suite TV: importa l'archivio .zip esportato da Suite TV (o file .ndjson/.json) oppure esporta la tua libreria in formato nativo Suite TV."
             },
             color = cs.onSurfaceVariant,
             fontSize = 12.sp,
@@ -428,17 +435,25 @@ private fun SuiteTvIntegrationSection(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             FilledTonalButton(
                 onClick = { onEvent(SettingsEvent.ExportSuiteTvHistory) },
-                enabled = !isImportingSuiteTv,
+                enabled = !isBusy,
                 shape = CircleShape,
                 modifier = Modifier.weight(1f),
             ) {
-                Icon(Icons.Rounded.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                if (isExportingSuiteTv) {
+                    CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Rounded.FileUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                }
                 Spacer(Modifier.width(6.dp))
-                Text("Esporta JSON", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = if (isExportingSuiteTv) "Esporto..." else "Esporta .zip",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
             FilledTonalButton(
                 onClick = { onEvent(SettingsEvent.ImportSuiteTvHistory) },
-                enabled = !isImportingSuiteTv,
+                enabled = !isBusy,
                 shape = CircleShape,
                 modifier = Modifier.weight(1f),
             ) {
@@ -449,11 +464,20 @@ private fun SuiteTvIntegrationSection(
                 }
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = if (isImportingSuiteTv) "Importo..." else "Importa JSON",
+                    text = if (isImportingSuiteTv) "Importo..." else "Importa .zip",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
+        }
+        if (!suiteTvSyncProgress.isNullOrBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = suiteTvSyncProgress,
+                color = cs.primary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
         Spacer(Modifier.height(8.dp))
         FilledTonalButton(
@@ -471,7 +495,7 @@ private fun SuiteTvIntegrationSection(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Esportazione: in Suite TV vai su Impostazioni → Importa → Trakt. Importazione: seleziona un file JSON esportato da Suite TV, Trakt o TV Time.",
+            text = "Importazione: seleziona il file suite-export-*.zip di Suite TV (oppure shows.ndjson / Trakt .json). Le serie non-anime vengono saltate in automatico.",
             color = cs.onSurfaceVariant.copy(alpha = 0.85f),
             fontSize = 11.sp,
             lineHeight = 15.sp,

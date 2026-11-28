@@ -4,6 +4,12 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.4.2 — Sincronizzazione Nativa Suite TV (.zip / .ndjson) con Filtro Automatico Non-Anime
+- **Importazione Nativa `suite-export-*.zip`**: *Impostazioni → Integrazione Suite TV → Importa .zip* legge direttamente l'archivio ufficiale di Suite TV (`manifest.json`, `shows.ndjson`, `movies.ndjson`), oltre a `.ndjson` singoli e Trakt `.json`.
+- **Matching Preciso Multi-Stagione & Filtro Non-Anime**: reverse-mapping via ARM v2 (`/api/v2/thetvdb`, `/api/v2/themoviedb`) che scarta istantaneamente serie/film live-action non-anime, abbina ogni stagione tramite ID AniList/MAL su AnimeUnity (gestendo anche anime split-cour come *JoJo* S2/S5 e serie continue come *Yu-Gi-Oh!*), conserva i timestamp `watchedAt` reali e mostra avanzamento live durante l'importazione.
+- **Esportazione Nativa `suite-export-aw-anime.zip`**: *Esporta .zip* genera l'archivio nativo Suite TV v1 (`manifest.json`, `shows.ndjson`, `movies.ndjson`) con `tvdbId` risolto e stagioni unificate per serie.
+- **Note rilascio semplificate (`RELEASE_NOTES.md`)**: separazione tra changelog tecnico (`README.md`) e note brevi in italiano semplice per il popup aggiornamenti in-app.
+
 ## Novità v1.4.1 — Segnalazioni Bug Anonime, Suite TV Diretto + Import JSON, Fix Calendario Lingua & Snackbar
 - **Segnalazione Bug & Idee Anonima (Zero Account GitHub)**: il modulo in *Impostazioni → Segnalazione Bug & Feedback* invia ora direttamente la segnalazione tramite relay serverless Cloudflare Worker (`aw-anime-reports`) che apre in automatico la issue sul repository senza richiedere account GitHub (con opzioni rapide Condividi, Copia e GitHub).
 - **Suite TV — Apertura Diretta Pagina Anime + Importazione JSON (Issue #5)**:

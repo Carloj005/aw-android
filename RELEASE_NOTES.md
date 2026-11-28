@@ -3,6 +3,16 @@
 Questo file contiene le note mostrate agli utenti nel popup aggiornamenti in-app e sul sito web.
 Regole di stile: italiano semplice e chiaro per tutti, nessuna parola tecnica, nessun simbolo Markdown (`**`, `` ` ``, link), massimo 1-2 righe per punto, diviso in `✨ Novità` e `🛠️ Correzioni`.
 
+## v1.4.2
+
+✨ Novità
+• Importazione completa da Suite TV: ora puoi selezionare direttamente l'archivio .zip esportato da Suite TV per importare i tuoi anime ed episodi visti, saltando in automatico serie TV e film non anime.
+• Esportazione nativa per Suite TV: ora l'app esporta direttamente in formato .zip compatibile con Suite TV, con barra di avanzamento durante la sincronizzazione.
+
+🛠️ Correzioni
+• Migliorato il riconoscimento degli anime divisi in più parti o stagioni durante l'importazione da Suite TV.
+• Finestra aggiornamenti ancora più ordinata con sezioni chiare per Novità e Correzioni.
+
 ## v1.4.1
 
 ✨ Novità

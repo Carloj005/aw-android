@@ -2,10 +2,13 @@ package com.carloj005.awanime
 
 import com.carloj005.awanime.data.integrations.BugReportHelper
 import com.carloj005.awanime.data.integrations.ReportKind
+import com.carloj005.awanime.data.integrations.ResolvedSuiteTvTarget
 import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.EpisodeProgress
 import com.carloj005.awanime.data.model.SearchSortOrder
 import com.carloj005.awanime.data.model.TrackedNotificationPrefs
+import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.network.SearchUtils
 import com.carloj005.awanime.data.notifications.SequelTracker
 import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
@@ -340,5 +343,93 @@ class V140FeaturesTest {
         assertEquals("Tougen Anki", tvTimeParsed[0].title)
         assertEquals(449843, tvTimeParsed[0].tvdbId)
         assertEquals(setOf(1, 2), tvTimeParsed[0].watchedEpisodes)
+    }
+
+    @Test
+    fun suiteTvIntegration_roundTripsNativeSuiteExportZipAndParsesOfficialNdjsonSchema() {
+        assertEquals(
+            "Le Bizzarre Avventure di JoJo",
+            SuiteTvIntegration.cleanTitleForSuiteTv("Le Bizzarre Avventure di JoJo (2012)"),
+        )
+
+        val sl1 = AnimeItem(id = "4290", title = "Solo Leveling", year = 2024, type = "TV")
+        val sl2 = AnimeItem(id = "5801", title = "Solo Leveling 2: Arise from the Shadow", year = 2025, type = "TV")
+        val movie = AnimeItem(id = "9001", title = "Suzume", year = 2022, type = "Movie")
+
+        val history = listOf(
+            WatchHistoryEntry(
+                anime = sl1,
+                currentEpisodeNum = "2",
+                currentVideoId = "v2",
+                completed = true,
+                updatedAt = 1_722_130_792_000L,
+                episodesProgress = mapOf(
+                    "1" to EpisodeProgress("1", "v1", 0L, 1_440_000L, completed = true, updatedAt = 1_722_130_792_000L),
+                    "2" to EpisodeProgress("2", "v2", 0L, 1_440_000L, completed = true, updatedAt = 1_722_130_800_000L),
+                ),
+            ),
+            WatchHistoryEntry(
+                anime = sl2,
+                currentEpisodeNum = "1",
+                currentVideoId = "v21",
+                completed = true,
+                updatedAt = 1_736_000_000_000L,
+                episodesProgress = mapOf(
+                    "1" to EpisodeProgress("1", "v21", 0L, 1_440_000L, completed = true, updatedAt = 1_736_000_000_000L),
+                ),
+            ),
+            WatchHistoryEntry(
+                anime = movie,
+                currentEpisodeNum = "1",
+                currentVideoId = "vm1",
+                completed = true,
+                updatedAt = 1_740_000_000_000L,
+                episodesProgress = mapOf(
+                    "1" to EpisodeProgress("1", "vm1", 0L, 7_200_000L, completed = true, updatedAt = 1_740_000_000_000L),
+                ),
+            ),
+        )
+
+        val targets = mapOf(
+            sl1.uniqueKey to ResolvedSuiteTvTarget(tvdbId = 389597, tvdbSeason = 1, tmdbId = 127532, canonicalTitle = "Solo Leveling"),
+            sl2.uniqueKey to ResolvedSuiteTvTarget(tvdbId = 389597, tvdbSeason = 2, tmdbId = 127532, canonicalTitle = "Solo Leveling"),
+            movie.uniqueKey to ResolvedSuiteTvTarget(tvdbId = 335579, tmdbId = 916224, canonicalTitle = "Suzume"),
+        )
+
+        val exported = SuiteTvIntegration.buildNativeSuiteTvZip(
+            history = history,
+            favorites = listOf(sl2),
+            resolvedTargetsByKey = targets,
+            appVersion = "1.4.2",
+            appBuild = 12,
+        )
+        assertEquals(1, exported.showCount)
+        assertEquals(3, exported.episodeCount)
+        assertEquals(1, exported.movieCount)
+
+        val reimported = SuiteTvIntegration.parseImportedSuiteTvBytes(exported.zipBytes)
+        val importedSl1 = reimported.firstOrNull { !it.isMovie && it.tvdbId == 389597 && it.seasonNumber == 1 }
+        val importedSl2 = reimported.firstOrNull { !it.isMovie && it.tvdbId == 389597 && it.seasonNumber == 2 }
+        val importedMovie = reimported.firstOrNull { it.isMovie && it.tvdbId == 335579 }
+
+        assertNotNull(importedSl1)
+        assertEquals(setOf(1, 2), importedSl1!!.watchedEpisodes)
+        assertTrue(importedSl1.isFavorite)
+        assertEquals(1_722_130_800_000L, importedSl1.episodeTimestampsMs[2])
+
+        assertNotNull(importedSl2)
+        assertEquals(setOf(1), importedSl2!!.watchedEpisodes)
+
+        assertNotNull(importedMovie)
+        assertEquals(916224, importedMovie!!.tmdbId)
+        assertEquals(setOf(1), importedMovie.watchedEpisodes)
+
+        // Official Suite TV shows.ndjson line with Season 0 specials (must skip season 0, keep season 1 & 2)
+        val rawNdjson = """
+            {"id":"show:tvdb:389597","tvdbId":389597,"realTmdbId":null,"title":"Solo Leveling","isFavorite":false,"isWatchlisted":false,"isStopped":false,"isHidden":false,"watched":[{"season":0,"number":1,"watchedAt":1722130792000},{"season":1,"number":1,"watchedAt":1722130792000},{"season":2,"number":1,"watchedAt":1736000000000}]}
+        """.trimIndent()
+        val parsedNdjson = SuiteTvIntegration.parseImportedSuiteTvBytes(rawNdjson.toByteArray())
+        assertEquals(2, parsedNdjson.size)
+        assertEquals(listOf(1, 2), parsedNdjson.map { it.seasonNumber })
     }
 }
