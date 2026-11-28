@@ -75,7 +75,8 @@ object SearchUtils {
 
     fun normalizeSearchText(text: String?): String {
         if (text.isNullOrBlank()) return ""
-        val decomposed = Normalizer.normalize(text, Normalizer.Form.NFKD)
+        val normalizedSigns = text.replace('×', 'x').replace('✕', 'x')
+        val decomposed = Normalizer.normalize(normalizedSigns, Normalizer.Form.NFKD)
         val noMarks = buildString(decomposed.length) {
             for (ch in decomposed) {
                 if (Character.getType(ch) != Character.NON_SPACING_MARK.toInt()) {

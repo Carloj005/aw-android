@@ -834,6 +834,8 @@ class AppViewModel(
                     uniqueKey = fullAnime.uniqueKey,
                     availableEpisodes = eps.size,
                     lastEpisodeNum = eps.lastOrNull()?.number,
+                    authoritative = true,
+                    hasEpisodeZero = eps.any { it.number.trim() == "0" },
                 )
                 val nextSeason = SequelTracker.findNextSeason(fullAnime, related)
 
@@ -1498,6 +1500,24 @@ class AppViewModel(
                                     val epMap = linkedMapOf<String, EpisodeProgress>()
                                     var highestEpInt = 0
                                     var latestTs = seasonRow.lastWatchedAtMs
+
+                                    // Seasons with a prelude Ep. 0 on AnimeUnity (e.g. High School DxD Hero: total=13, released=12)
+                                    val likelyHasPreludeZero = courAnime.totalEpisodes != null &&
+                                        courAnime.releasedEpisodes > 0 &&
+                                        courAnime.totalEpisodes == courAnime.releasedEpisodes + 1 &&
+                                        epOffset == 0 &&
+                                        1 in seasonRow.watchedEpisodes
+                                    if (likelyHasPreludeZero) {
+                                        val ts0 = seasonRow.episodeTimestampsMs[1] ?: seasonRow.lastWatchedAtMs
+                                        epMap["0"] = EpisodeProgress(
+                                            episodeNum = "0",
+                                            videoId = "",
+                                            positionMs = 0L,
+                                            durationMs = epDurationMs,
+                                            completed = true,
+                                            updatedAt = ts0,
+                                        )
+                                    }
 
                                     for (epInt in 1..effectiveCourSize) {
                                         val targetSeasonEp = epOffset + epInt

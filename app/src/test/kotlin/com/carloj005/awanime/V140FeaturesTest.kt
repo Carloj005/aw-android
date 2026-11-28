@@ -622,4 +622,73 @@ class V140FeaturesTest {
             tempDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun historyRepository_syncHealsPoisonedOngoingTotalAndHandlesEpisodeZero() = runTest {
+        assertEquals("high school dxd", SearchUtils.normalizeSearchText("High School D×D"))
+        assertEquals("High School DxD", SuiteTvIntegration.cleanTitleForSuiteTv("High School D×D"))
+
+        val tempDir = Files.createTempDirectory("aw_hist_ep0_heal_test").toFile()
+        try {
+            val repo = HistoryRepository(tempDir)
+
+            // 1. Poisoned Steel Ball Run (v1.4.3 stored releasedEpisodes=11 == totalEpisodes=11 while only 10 aired)
+            val poisonedSbr = WatchHistoryEntry(
+                anime = AnimeItem(
+                    id = "7808",
+                    title = "Le Bizzarre Avventure di JoJo: Steel Ball Run 2nd - 3rd Stage (ITA)",
+                    isDub = true,
+                    releasedEpisodes = 11,
+                    totalEpisodes = 11,
+                ),
+                currentEpisodeNum = "10",
+                currentVideoId = "",
+                completed = true,
+                isAtLatestEpisode = false,
+            )
+            repo.mergeImport(listOf(poisonedSbr))
+            assertTrue(repo.getEntry("7808_ita")!!.shouldShowInContinueWatching)
+
+            // Home/Calendar sees live released=10, latest="10" -> heals releasedEpisodes 11 -> 10 and marks caught up
+            repo.syncKnownEpisodeAvailability("7808_ita", availableEpisodes = 10, lastEpisodeNum = "10")
+            val healedSbr = repo.getEntry("7808_ita")!!
+            assertEquals(10, healedSbr.anime.releasedEpisodes)
+            assertTrue(healedSbr.isAtLatestEpisode)
+            assertFalse(healedSbr.shouldShowInContinueWatching)
+
+            // 2. High School DxD Hero (nums = 0..12, eps.size = 13, lastEpisodeNum = "12")
+            val dxdEps = (1..12).associate { ep ->
+                ep.toString() to EpisodeProgress(ep.toString(), "", completed = true, updatedAt = 1_700_000_000_000L)
+            }
+            val dxdEntry = WatchHistoryEntry(
+                anime = AnimeItem(
+                    id = "208",
+                    title = "High School DxD Hero",
+                    releasedEpisodes = 12,
+                    totalEpisodes = 13,
+                ),
+                currentEpisodeNum = "12",
+                currentVideoId = "",
+                completed = true,
+                isAtLatestEpisode = true,
+                episodesProgress = dxdEps,
+            )
+            repo.mergeImport(listOf(dxdEntry))
+
+            // Opening DetailScreen (eps.size=13 with Ep. 0) must NOT regress to uncaught-up and must mark Ep. 0 watched
+            repo.syncKnownEpisodeAvailability(
+                uniqueKey = "208_sub",
+                availableEpisodes = 13,
+                lastEpisodeNum = "12",
+                authoritative = true,
+                hasEpisodeZero = true,
+            )
+            val syncedDxd = repo.getEntry("208_sub")!!
+            assertTrue(syncedDxd.isAtLatestEpisode)
+            assertFalse(syncedDxd.shouldShowInContinueWatching)
+            assertEquals(true, syncedDxd.episodesProgress["0"]?.completed)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }

@@ -154,7 +154,7 @@ object SuiteTvIntegration {
      * TMDB/TheTVDB and AnimeUnity matching resolve the parent series cleanly.
      */
     fun cleanTitleForSuiteTv(rawTitle: String): String {
-        var cleaned = SearchUtils.stripDubTags(rawTitle)
+        var cleaned = SearchUtils.stripDubTags(rawTitle.replace('×', 'x'))
             .replace(Regex("""\((?:SUB|SUB\s*ITA|DUB|UNCENSORED|CENSURATO|CR)\)""", RegexOption.IGNORE_CASE), "")
             .replace(Regex("""\s*\(\d{4}\)\s*$"""), "")
             .trim()

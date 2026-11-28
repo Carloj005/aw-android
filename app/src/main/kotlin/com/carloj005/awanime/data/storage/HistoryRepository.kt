@@ -89,18 +89,34 @@ class HistoryRepository(
         uniqueKey: String,
         availableEpisodes: Int,
         lastEpisodeNum: String? = null,
+        authoritative: Boolean = false,
+        hasEpisodeZero: Boolean = false,
     ) {
         if (availableEpisodes <= 0 && lastEpisodeNum.isNullOrBlank()) return
         val existing = getEntry(uniqueKey) ?: return
 
         val curEpInt = existing.currentEpisodeNum.trim().split(".", "-").firstOrNull()?.toIntOrNull()
         val lastEpInt = lastEpisodeNum?.trim()?.split(".", "-")?.firstOrNull()?.toIntOrNull()
-        val maxKnown = maxOf(availableEpisodes, lastEpInt ?: 0, existing.anime.releasedEpisodes)
+        // Prefer the actual final episode number over list size so Episode 0 / .5 recaps never inflate max episode
+        val observedLatestNum = when {
+            lastEpInt != null && lastEpInt > 0 -> lastEpInt
+            hasEpisodeZero && availableEpisodes > 1 -> availableEpisodes - 1
+            else -> availableEpisodes
+        }
+        val poisonedWithPlannedTotal = existing.anime.totalEpisodes != null &&
+            existing.anime.releasedEpisodes == existing.anime.totalEpisodes &&
+            observedLatestNum in 1 until existing.anime.releasedEpisodes
+        val effectiveKnown = if (authoritative || poisonedWithPlannedTotal) {
+            observedLatestNum
+        } else {
+            maxOf(observedLatestNum, existing.anime.releasedEpisodes)
+        }
 
-        val hasNewerEpisode = curEpInt != null && maxKnown > curEpInt
+        val isExactLastMatch = !lastEpisodeNum.isNullOrBlank() &&
+            existing.currentEpisodeNum.trim() == lastEpisodeNum.trim()
+        val hasNewerEpisode = !isExactLastMatch && curEpInt != null && effectiveKnown > curEpInt
         val isAtFinalEpisode = existing.completed && (
-            (!lastEpisodeNum.isNullOrBlank() && existing.currentEpisodeNum.trim() == lastEpisodeNum.trim()) ||
-                (curEpInt != null && maxKnown > 0 && curEpInt >= maxKnown)
+            isExactLastMatch || (curEpInt != null && effectiveKnown > 0 && curEpInt >= effectiveKnown)
             )
         val nextAtLatest = when {
             !existing.completed -> false
@@ -109,7 +125,14 @@ class HistoryRepository(
             else -> existing.isAtLatestEpisode
         }
 
-        if (maxKnown == existing.anime.releasedEpisodes && nextAtLatest == existing.isAtLatestEpisode) {
+        val shouldBackfillEpZero = authoritative && hasEpisodeZero && isAtFinalEpisode &&
+            existing.episodesProgress["0"]?.completed != true &&
+            existing.episodesProgress["1"]?.completed == true
+
+        if (effectiveKnown == existing.anime.releasedEpisodes &&
+            nextAtLatest == existing.isAtLatestEpisode &&
+            !shouldBackfillEpZero
+        ) {
             return
         }
 
@@ -118,9 +141,27 @@ class HistoryRepository(
                 if (entry.uniqueKey != uniqueKey) {
                     entry
                 } else {
+                    val updatedEps = if (shouldBackfillEpZero) {
+                        LinkedHashMap(entry.episodesProgress).apply {
+                            put(
+                                "0",
+                                EpisodeProgress(
+                                    episodeNum = "0",
+                                    videoId = "",
+                                    positionMs = 0L,
+                                    durationMs = entry.durationMs,
+                                    completed = true,
+                                    updatedAt = entry.updatedAt,
+                                )
+                            )
+                        }
+                    } else {
+                        entry.episodesProgress
+                    }
                     entry.copy(
-                        anime = entry.anime.copy(releasedEpisodes = maxOf(entry.anime.releasedEpisodes, maxKnown)),
+                        anime = entry.anime.copy(releasedEpisodes = effectiveKnown),
                         isAtLatestEpisode = nextAtLatest,
+                        episodesProgress = updatedEps,
                     )
                 }
             }
@@ -215,7 +256,7 @@ class HistoryRepository(
             anilistId = incoming.anilistId.takeIf { it > 0 } ?: previous.anilistId,
             malId = incoming.malId.takeIf { it > 0 } ?: previous.malId,
             totalEpisodes = incoming.totalEpisodes ?: previous.totalEpisodes,
-            releasedEpisodes = maxOf(incoming.releasedEpisodes, previous.releasedEpisodes),
+            releasedEpisodes = incoming.releasedEpisodes.takeIf { it > 0 } ?: previous.releasedEpisodes,
         )
     }
 }

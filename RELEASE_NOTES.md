@@ -3,6 +3,13 @@
 Questo file contiene le note mostrate agli utenti nel popup aggiornamenti in-app e sul sito web.
 Regole di stile: italiano semplice e chiaro per tutti, nessuna parola tecnica, nessun simbolo Markdown (`**`, `` ` ``, link), massimo 1-2 righe per punto, diviso in `✨ Novità` e `🛠️ Correzioni`.
 
+## v1.4.5
+
+🛠️ Correzioni
+• Anime in corso già in pari (come JoJo Steel Ball Run): riparati automaticamente anche i vecchi dati salvati, così spariscono subito da "Continua a guardare" all'avvio.
+• Stagioni con episodio 0 (come High School DxD Hero): l'episodio 0 viene segnato automaticamente come visto quando completi la stagione e non fa più ricomparire l'anime in "Continua a guardare".
+• Migliorata la ricerca e importazione per titoli con il simbolo × (es. High School D×D, Hunter × Hunter, Spy × Family).
+
 ## v1.4.4
 
 ✨ Novità

@@ -1,12 +1,12 @@
 (() => {
   const REPO = "Carloj005/aw-android";
   const FALLBACK_RELEASE = {
-    tag_name: "v1.4.4",
-    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.4/AW-Anime-v1.4.4.apk",
-    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.4/AW-Anime-v1.4.4.apk.sha256",
+    tag_name: "v1.4.5",
+    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.5/AW-Anime-v1.4.5.apk",
+    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.5/AW-Anime-v1.4.5.apk.sha256",
     size_mb: "2.8 MB",
     date: "Ultima release",
-    notes: "Nuovo tasto rapido ✕ su Continua a guardare, fix anime in corso in pari (JoJo), fix anime interrotti Suite TV (Azur Lane) e fix conflitto Yu-Gi-Oh!.",
+    notes: "Auto-riparazione anime in corso in pari (Steel Ball Run), supporto episodio 0 su stagioni complete (High School DxD Hero) e normalizzazione titoli con ×.",
   };
 
   // 1. Theme toggle (Dark / Light Material You)

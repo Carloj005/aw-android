@@ -4,6 +4,11 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.4.5 — Fix Auto-Riparazione Episodi Usciti, Episodio 0 & Simbolo `×`
+- **Auto-riparazione episodi usciti (`Steel Ball Run` & anime in corso)**: `HistoryRepository.syncKnownEpisodeAvailability` e `mergeRichAnimeMetadata` correggono ora i contatori `releasedEpisodes` precedentemente sovrascritti da `totalEpisodes` (es. `11 → 10` su *Steel Ball Run*), nascondendo subito all'avvio gli anime in corso già in pari.
+- **Supporto Episodio `0` (es. *High School DxD Hero* `0..12`)**: `syncKnownEpisodeAvailability` confronta `lastEpisodeNum` anziché `episodes.size` (evitando falsi "nuovo episodio" su serie con Ep. `0`/`.5`), segna automaticamente l'Episodio `0` come completato sulle stagioni finite sia in importazione Suite TV che aprendo la scheda anime.
+- **Normalizzazione `×` (`U+00D7`)**: `SearchUtils.normalizeSearchText` e `SuiteTvIntegration.cleanTitleForSuiteTv` convertono `×` in `x` per riconoscere senza errori *High School D×D*, *Hunter × Hunter* e *Spy × Family*.
+
 ## Novità v1.4.4 — Fix Definitivo "Continua a guardare" (Anime in Corso, Interrotti Suite TV, Yu-Gi-Oh! & Tasto ✕)
 - **Tasto rapido `✕` su "Continua a guardare" in Home**: permette di nascondere con 1 tocco qualsiasi anime da "Continua a guardare" (via flag persistente `hiddenFromContinueWatching` su `WatchHistoryEntry`) mantenendo intatta la cronologia in *Libreria → Cronologia* (si ripristina automaticamente se riprendi a guardare un nuovo episodio).
 - **Fix anime in corso già in pari (es. *JoJo Steel Ball Run* `Ep. 10/11`)**: `WatchHistoryEntry.isCaughtUp` e l'importatore Suite TV confrontano ora con `releasedEpisodes` (episodi realmente usciti) invece di `totalEpisodes` (episodi futuri pianificati), nascondendo subito i titoli in pari fino all'uscita del prossimo episodio.
