@@ -224,16 +224,22 @@ class V140FeaturesTest {
         assertTrue(fallbackEntries[0].text.contains("v1.4.0"))
 
         val richNotes = """
-            - **Calendario Personalizzato**: mostra solo gli anime seguiti con campanella per singolo titolo.
+            ✨ Novità
+            • Calendario personalizzato: mostra solo gli anime seguiti.
+            🛠️ Correzioni
             - **Fix Suite TV**: apre direttamente `com.nicolasbordeaux.suitetv`.
             **Full Changelog**: https://github.com/Carloj005/aw-android/compare/v1.3.2...v1.4.0
         """.trimIndent()
         val entries = AppUpdater.parseChangelogEntries(richNotes, "v1.4.0")
-        assertEquals(2, entries.size)
-        assertEquals("Calendario Personalizzato", entries[0].title)
-        assertEquals("mostra solo gli anime seguiti con campanella per singolo titolo.", entries[0].text)
-        assertEquals("Fix Suite TV", entries[1].title)
-        assertEquals("apre direttamente com.nicolasbordeaux.suitetv.", entries[1].text)
+        assertEquals(4, entries.size)
+        assertTrue(entries[0].isSectionHeader)
+        assertEquals("✨ Novità", entries[0].text)
+        assertEquals("Calendario personalizzato", entries[1].title)
+        assertEquals("mostra solo gli anime seguiti.", entries[1].text)
+        assertTrue(entries[2].isSectionHeader)
+        assertEquals("🛠️ Correzioni", entries[2].text)
+        assertEquals("Fix Suite TV", entries[3].title)
+        assertEquals("apre direttamente com.nicolasbordeaux.suitetv.", entries[3].text)
     }
 
     @Test

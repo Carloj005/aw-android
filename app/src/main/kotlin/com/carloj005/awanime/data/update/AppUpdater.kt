@@ -314,6 +314,11 @@ class AppUpdater(
         private val COLON_LEAD_REGEX = Regex("""^([^:\n]{2,56}):\s+(.+)$""")
         private val INLINE_MARKDOWN_REGEX = Regex("""(\*\*|__|\*|`)""")
 
+        private val SECTION_LABEL_REGEX = Regex(
+            """^(?:[^\p{L}\p{N}\s]{1,4}\s*)?(?:novità|correzioni|miglioramenti|fix|bugfix|sicurezza|aggiornamenti|what's new|fixes)\s*:?$""",
+            RegexOption.IGNORE_CASE,
+        )
+
         fun cleanReleaseNotes(rawBody: String, tagName: String): String {
             val entries = parseChangelogEntries(rawBody, tagName)
             return entries.joinToString("\n") { entry ->
@@ -344,11 +349,16 @@ class AppUpdater(
                     continue
                 }
 
-                val bulletBody = when {
-                    withoutLinks.startsWith("- ") || withoutLinks.startsWith("* ") || withoutLinks.startsWith("• ") ->
-                        withoutLinks.drop(2).trim()
-                    else -> withoutLinks
+                val isBullet = withoutLinks.startsWith("- ") || withoutLinks.startsWith("* ") || withoutLinks.startsWith("• ")
+                if (!isBullet) {
+                    val plainHeader = INLINE_MARKDOWN_REGEX.replace(withoutLinks, "").trim()
+                    if (SECTION_LABEL_REGEX.matches(plainHeader)) {
+                        cleaned.add(ChangelogEntry(text = plainHeader.trimEnd(':'), isSectionHeader = true))
+                        continue
+                    }
                 }
+
+                val bulletBody = if (isBullet) withoutLinks.drop(2).trim() else withoutLinks
                 if (bulletBody.isEmpty()) continue
 
                 val boldMatch = BOLD_LEAD_REGEX.matchEntire(bulletBody)

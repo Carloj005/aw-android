@@ -75,7 +75,7 @@ jobs:
           cp "$APK_SRC" "AW-Anime-${TAG_NAME}.apk"
           sha256sum "AW-Anime-${TAG_NAME}.apk" > "AW-Anime-${TAG_NAME}.apk.sha256"
 
-      - name: Extract release notes from README.md
+      - name: Extract user-friendly release notes
         shell: bash
         run: |
           TAG_NAME="${{ github.event.inputs.tag || github.ref_name }}"
@@ -84,16 +84,31 @@ jobs:
 
           tag = sys.argv[1].strip()
           notes = ""
+
+          # 1. Prefer user-friendly RELEASE_NOTES.md (clean plain Italian for the in-app update dialog)
           try:
-              with open("README.md", "r", encoding="utf-8") as f:
-                  readme = f.read()
-              pattern = rf"^##\s+Novità\s+{re.escape(tag)}\b[^\n]*\n(.*?)(?=\n##\s+|\Z)"
-              match = re.search(pattern, readme, flags=re.MULTILINE | re.DOTALL)
+              with open("RELEASE_NOTES.md", "r", encoding="utf-8") as f:
+                  rn = f.read()
+              pattern = rf"^##\s+{re.escape(tag)}\b[^\n]*\n(.*?)(?=\n##\s+|\Z)"
+              match = re.search(pattern, rn, flags=re.MULTILINE | re.DOTALL)
               if match:
                   notes = match.group(1).strip()
           except Exception:
               pass
 
+          # 2. Fallback to README.md if RELEASE_NOTES.md has no matching section
+          if not notes:
+              try:
+                  with open("README.md", "r", encoding="utf-8") as f:
+                      readme = f.read()
+                  pattern = rf"^##\s+Novità\s+{re.escape(tag)}\b[^\n]*\n(.*?)(?=\n##\s+|\Z)"
+                  match = re.search(pattern, readme, flags=re.MULTILINE | re.DOTALL)
+                  if match:
+                      notes = match.group(1).strip()
+              except Exception:
+                  pass
+
+          # 3. Last-resort fallback to commit subjects
           if not notes:
               try:
                   prev_tag = subprocess.check_output(
@@ -104,12 +119,12 @@ jobs:
                   rev_range = f"{prev_tag}..{tag}"
               except Exception:
                   rev_range = "-n 5"
-              cmd = ["git", "log", "--pretty=format:- %s"]
+              cmd = ["git", "log", "--pretty=format:• %s"]
               cmd.extend(rev_range.split() if rev_range.startswith("-") else [rev_range])
               notes = subprocess.check_output(cmd, text=True).strip()
 
           with open("release_notes.md", "w", encoding="utf-8") as out:
-              out.write(notes or f"Nuova versione {tag} disponibile.")
+              out.write(notes or f"Nuova versione {tag} disponibile con miglioramenti e correzioni.")
           print(notes)
           PY
 
