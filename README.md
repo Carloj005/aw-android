@@ -4,6 +4,12 @@
 
 App Android nativa (Kotlin + Jetpack Compose + Material You 3 Expressive + Media3 ExoPlayer) basata sull'ecosistema `aw-cli`, aggiornata per il nuovo **AnimeUnity (`https://animeunity.cx`)**.
 
+## Novità v1.4.4 — Fix Definitivo "Continua a guardare" (Anime in Corso, Interrotti Suite TV, Yu-Gi-Oh! & Tasto ✕)
+- **Tasto rapido `✕` su "Continua a guardare" in Home**: permette di nascondere con 1 tocco qualsiasi anime da "Continua a guardare" (via flag persistente `hiddenFromContinueWatching` su `WatchHistoryEntry`) mantenendo intatta la cronologia in *Libreria → Cronologia* (si ripristina automaticamente se riprendi a guardare un nuovo episodio).
+- **Fix anime in corso già in pari (es. *JoJo Steel Ball Run* `Ep. 10/11`)**: `WatchHistoryEntry.isCaughtUp` e l'importatore Suite TV confrontano ora con `releasedEpisodes` (episodi realmente usciti) invece di `totalEpisodes` (episodi futuri pianificati), nascondendo subito i titoli in pari fino all'uscita del prossimo episodio.
+- **Rispetto flag `isStopped` / `isHidden` di Suite TV**: gli anime interrotti/abbandonati su Suite TV (es. *Azur Lane*) restano in Cronologia ma non affollano più "Continua a guardare"; quelli nascosti vengono saltati.
+- **Fix collisione serie omonime & resilienza ARM**: `canUseLocalOnly` verifica ora la corrispondenza esatta per `anilistId`/`malId` (impedendo a *Yu-Gi-Oh!* 1998 di sovrascrivere *Yu-Gi-Oh! Duel Monsters*), i metadati freschi di `/api/archive` hanno priorità sulla cache locale, `lookupArmByTvdbId`/`lookupArmByTmdbId` distinguono `HTTP 404` da errori temporanei `429`/`5xx` con retry automatico, e vengono preservati i film assegnati a stagioni numerate TVDB (es. *Initial D Third Stage* = S3).
+
 ## Novità v1.4.3 — Hotfix Anti-Rate-Limit Import Suite TV, Copertine & Serie Continue
 - **Fix definitivo blocco WAF `HTTP 403` dopo import `.zip` Suite TV**:
   - Importazione ristrutturata in 2 fasi: **Fase 1** pre-filtra in parallelo su ARM v2 tutti i titoli non-anime (zero chiamate verso AnimeUnity); **Fase 2** interroga AnimeUnity in modo sequenziale e cadenzato (`1` sola richiesta leggera `/api/archive?query=...&page=1` per anime con pausa `450ms`, **zero** chiamate `getEpisodes()`, riuso immediato dei titoli già presenti in libreria, salvataggio incrementale ogni 15 anime e circuit-breaker su `RateLimitedException` HTTP `403`/`429`).

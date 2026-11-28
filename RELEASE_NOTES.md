@@ -3,6 +3,16 @@
 Questo file contiene le note mostrate agli utenti nel popup aggiornamenti in-app e sul sito web.
 Regole di stile: italiano semplice e chiaro per tutti, nessuna parola tecnica, nessun simbolo Markdown (`**`, `` ` ``, link), massimo 1-2 righe per punto, diviso in `✨ Novità` e `🛠️ Correzioni`.
 
+## v1.4.4
+
+✨ Novità
+• Nuovo tasto rapido ✕ sulle card di "Continua a guardare" in Home per nascondere subito un anime finito o interrotto (rimane comunque salvato nella Cronologia).
+
+🛠️ Correzioni
+• Anime in corso già in pari (come JoJo Steel Ball Run all'ultimo episodio uscito) non restano più bloccati in "Continua a guardare" e ricompaiono da soli quando esce il prossimo episodio.
+• Gli anime interrotti o abbandonati su Suite TV (come Azur Lane) non compaiono più in "Continua a guardare".
+• Risolto il conflitto durante l'importazione di serie con titoli simili (come Yu-Gi-Oh! 1998 e Yu-Gi-Oh! Duel Monsters) e aggiunta protezione contro eventuali errori temporanei di rete durante l'analisi del catalogo.
+
 ## v1.4.3
 
 🛠️ Correzioni

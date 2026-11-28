@@ -929,6 +929,7 @@ class AppViewModel(
 
     fun removeFavorite(uniqueKey: String) = favoritesRepo.remove(uniqueKey)
     fun removeHistory(uniqueKey: String) = historyRepo.remove(uniqueKey)
+    fun hideFromContinueWatching(uniqueKey: String) = historyRepo.hideFromContinueWatching(uniqueKey)
 
     fun enqueueDownload(anime: AnimeItem, episode: EpisodeItem) = downloadRepo.enqueueDownload(anime, episode)
     fun retryDownload(entry: DownloadEntry) = downloadRepo.retryDownload(entry)
@@ -1239,7 +1240,7 @@ class AppViewModel(
 
                     // Phase 1: Fast parallel non-anime pre-filter via ARM v2 (zero calls to AnimeUnity!)
                     val prefilterDone = AtomicInteger(0)
-                    val armSemaphore = Semaphore(4)
+                    val armSemaphore = Semaphore(3)
                     val animeGroupsToSync = coroutineScope {
                         groups.mapIndexed { orderIdx, showGroup ->
                             async {
@@ -1250,26 +1251,38 @@ class AppViewModel(
                                     val doneIdx = prefilterDone.incrementAndGet()
                                     _suiteTvSyncProgress.value = "Analisi catalogo Suite TV ($doneIdx/$totalGroups)..."
 
-                                    if (cleanShowTitle.length < 2) {
+                                    if (cleanShowTitle.length < 2 || first.isHidden) {
                                         skippedNonAnimeOrMissing.incrementAndGet()
                                         return@withPermit null
                                     }
 
-                                    val armMappings: List<ArmSeasonMapping> = when {
-                                        !first.isMovie && first.tvdbId != null -> {
-                                            SuiteTvIntegration.resolveArmByTvdbId(thirdPartyHttpClient, first.tvdbId)
-                                        }
-                                        first.isMovie && first.tmdbId != null -> {
-                                            SuiteTvIntegration.resolveArmByTmdbId(thirdPartyHttpClient, first.tmdbId)
-                                        }
-                                        else -> emptyList()
-                                    }
-                                    // Official TVDB/TMDB ID with zero ARM anime mappings -> live-action show/Western movie
                                     val hasExternalId = (!first.isMovie && first.tvdbId != null) ||
                                         (first.isMovie && first.tmdbId != null)
-                                    if (hasExternalId && armMappings.isEmpty()) {
+                                    val armResult = when {
+                                        !first.isMovie && first.tvdbId != null -> {
+                                            SuiteTvIntegration.lookupArmByTvdbId(thirdPartyHttpClient, first.tvdbId)
+                                        }
+                                        first.isMovie && first.tmdbId != null -> {
+                                            SuiteTvIntegration.lookupArmByTmdbId(thirdPartyHttpClient, first.tmdbId)
+                                        }
+                                        else -> null
+                                    }
+                                    // Skip immediately when ARM confirms HTTP 404 (live-action TV show / Western movie)
+                                    if (hasExternalId && armResult != null && armResult.confirmedNotAnime) {
                                         skippedNonAnimeOrMissing.incrementAndGet()
                                         return@withPermit null
+                                    }
+                                    val armMappings = armResult?.mappings.orEmpty()
+                                    // If ARM transiently failed (not 404), only proceed if already in local library or favorited
+                                    if (hasExternalId && armMappings.isEmpty() && !first.isFavorite) {
+                                        val alreadyLocal = localPool.any { cand ->
+                                            SearchUtils.normalizeSearchText(SuiteTvIntegration.cleanTitleForSuiteTv(cand.title)) ==
+                                                SearchUtils.normalizeSearchText(cleanShowTitle)
+                                        }
+                                        if (!alreadyLocal) {
+                                            skippedNonAnimeOrMissing.incrementAndGet()
+                                            return@withPermit null
+                                        }
                                     }
                                     Triple(orderIdx, showGroup, armMappings)
                                 }
@@ -1300,29 +1313,72 @@ class AppViewModel(
                         val prefersDub = userFranchiseProfiles[fKey]?.let { it.prefersDub && !it.prefersSub } ?: false
                         val sortedSeasons = showGroup.sortedBy { it.seasonNumber }
                         val totalWatchedFlat = sortedSeasons.sumOf { it.watchedEpisodes.size }
+                        val hideInContinueWatching = first.isStopped
 
+                        // Filter out season 0 specials and standalone MOVIE/OVA/SPECIAL entries for mainline continuous checks
+                        val tvArmMappings = armMappings.filter {
+                            it.tvdbSeason != 0 &&
+                                !it.media.equals("MOVIE", ignoreCase = true) &&
+                                !it.media.equals("OVA", ignoreCase = true) &&
+                                !it.media.equals("SPECIAL", ignoreCase = true)
+                        }
+                        // Preserve movies explicitly assigned to a numbered TVDB season (e.g. Initial D Third Stage = S3)
+                        val seasonalArmMappings = armMappings.filter {
+                            it.tvdbSeason != 0 &&
+                                !it.media.equals("OVA", ignoreCase = true) &&
+                                !it.media.equals("SPECIAL", ignoreCase = true) &&
+                                (!it.media.equals("MOVIE", ignoreCase = true) || (it.tvdbSeason != null && it.tvdbSeason > 0))
+                        }
+                        val distinctMainlineArmIds = tvArmMappings
+                            .mapNotNull { it.anilistId ?: it.malId }
+                            .toSet()
+
+                        val cleanNorm = SearchUtils.normalizeSearchText(cleanShowTitle)
                         val localMatches = localPool.filter { cand ->
-                            SearchUtils.scoreQueryAgainstTitles(
+                            val armIdHit = distinctMainlineArmIds.isNotEmpty() && (
+                                (cand.anilistId > 0 && cand.anilistId in distinctMainlineArmIds) ||
+                                    (cand.malId > 0 && cand.malId in distinctMainlineArmIds)
+                                )
+                            armIdHit || SearchUtils.scoreQueryAgainstTitles(
                                 cleanShowTitle,
                                 listOf(SuiteTvIntegration.cleanTitleForSuiteTv(cand.title), cand.title, cand.titleIt),
                             ) >= 0.80
                         }
-                        val localDistinctIds = localMatches.distinctBy { it.id }
-                        val localHasCompleteMeta = localMatches.isNotEmpty() && localMatches.all {
-                            !it.displayImageUrl.isNullOrBlank() && maxOf(it.releasedEpisodes, it.totalEpisodes ?: 0) > 0
+                        val localArmMatched = if (distinctMainlineArmIds.isNotEmpty()) {
+                            localMatches.filter { cand ->
+                                (cand.anilistId > 0 && cand.anilistId in distinctMainlineArmIds) ||
+                                    (cand.malId > 0 && cand.malId in distinctMainlineArmIds)
+                            }
+                        } else {
+                            emptyList()
                         }
-                        val canUseLocalOnly = localHasCompleteMeta && (
-                            first.isMovie ||
-                                sortedSeasons.size <= 1 ||
-                                localDistinctIds.size >= sortedSeasons.size ||
-                                (
-                                    localDistinctIds.size == 1 &&
-                                        maxOf(
-                                            localDistinctIds[0].releasedEpisodes,
-                                            localDistinctIds[0].totalEpisodes ?: 0,
-                                        ) >= totalWatchedFlat
-                                    )
-                            )
+                        val canUseLocalOnly = if (distinctMainlineArmIds.isNotEmpty()) {
+                            val armDistinct = localArmMatched.distinctBy { it.id }
+                            val hasMeta = armDistinct.isNotEmpty() && armDistinct.all {
+                                !it.displayImageUrl.isNullOrBlank() && maxOf(it.releasedEpisodes, it.totalEpisodes ?: 0) > 0
+                            }
+                            hasMeta && (
+                                first.isMovie ||
+                                    sortedSeasons.size <= 1 ||
+                                    armDistinct.size >= distinctMainlineArmIds.size ||
+                                    (
+                                        armDistinct.size == 1 &&
+                                            maxOf(armDistinct[0].releasedEpisodes, armDistinct[0].totalEpisodes ?: 0) >= totalWatchedFlat
+                                        )
+                                )
+                        } else {
+                            val exactLocal = localMatches.filter { cand ->
+                                SearchUtils.normalizeSearchText(SuiteTvIntegration.cleanTitleForSuiteTv(cand.title)) == cleanNorm
+                            }.distinctBy { it.id }
+                            val hasMeta = exactLocal.isNotEmpty() && exactLocal.all {
+                                !it.displayImageUrl.isNullOrBlank() && maxOf(it.releasedEpisodes, it.totalEpisodes ?: 0) > 0
+                            }
+                            hasMeta && (
+                                first.isMovie ||
+                                    sortedSeasons.size <= 1 ||
+                                    exactLocal.size >= sortedSeasons.size
+                                )
+                        }
 
                         val remoteMatches: List<AnimeItem> = if (canUseLocalOnly) {
                             emptyList()
@@ -1341,7 +1397,8 @@ class AppViewModel(
                             }
                         }
 
-                        val allCandidates = (localMatches + remoteMatches)
+                        // Prefer fresh remote metadata (anilistId, malId, posterUrl, releasedEpisodes) over stale local cache
+                        val allCandidates = (remoteMatches + localMatches)
                             .distinctBy { it.uniqueKey }
                         if (allCandidates.isEmpty()) {
                             skippedNonAnimeOrMissing.incrementAndGet()
@@ -1350,18 +1407,7 @@ class AppViewModel(
 
                         var anySeasonMatched = false
 
-                        // Filter out MOVIE/OVA/SPECIAL and season 0 from TV ARM entries so continuous series flatten properly
-                        val tvArmMappings = armMappings.filter {
-                            it.tvdbSeason != 0 &&
-                                !it.media.equals("MOVIE", ignoreCase = true) &&
-                                !it.media.equals("OVA", ignoreCase = true) &&
-                                !it.media.equals("SPECIAL", ignoreCase = true)
-                        }
-                        val distinctMainlineArmIds = tvArmMappings
-                            .mapNotNull { it.anilistId ?: it.malId }
-                            .toSet()
-
-                        // Continuous single-entry anime (e.g. Yu-Gi-Oh! Duel Monsters 224 ep, Yu-Gi-Oh! Zexal 146 ep, Hunter x Hunter 148 ep)
+                        // Continuous single-entry anime (e.g. Yu-Gi-Oh! Duel Monsters 224 ep, Yu-Gi-Oh! Zexal 146 ep, Great Pretender 23 ep)
                         if (!first.isMovie && sortedSeasons.size > 1 && totalWatchedFlat > 0) {
                             val mainlineCandidates = resolveMainlineCandidates(
                                 cleanShowTitle = cleanShowTitle,
@@ -1382,10 +1428,8 @@ class AppViewModel(
                                 else -> null
                             }
                             if (singleContinuousTarget != null) {
-                                val knownEpCount = maxOf(
-                                    singleContinuousTarget.releasedEpisodes,
-                                    singleContinuousTarget.totalEpisodes ?: 0,
-                                )
+                                val knownEpCount = singleContinuousTarget.releasedEpisodes.takeIf { it > 0 }
+                                    ?: (singleContinuousTarget.totalEpisodes ?: 0)
                                 val firstSeasonMax = sortedSeasons.first().watchedEpisodes.maxOrNull() ?: 0
                                 val shouldFlatten = knownEpCount >= totalWatchedFlat && (
                                     distinctMainlineArmIds.size <= 1 ||
@@ -1401,6 +1445,7 @@ class AppViewModel(
                                         anime = singleContinuousTarget,
                                         knownEpCount = knownEpCount,
                                         watchedTimestamps = flatTimestamps,
+                                        hiddenFromContinueWatching = hideInContinueWatching,
                                     )
                                     if (entry != null) {
                                         mergedHistory.add(entry)
@@ -1417,7 +1462,7 @@ class AppViewModel(
 
                         // Multi-season / split-cour / single-season / movie mapping (zero getEpisodes() network calls!)
                         if (!anySeasonMatched) {
-                            val effectiveArm = if (first.isMovie) armMappings else tvArmMappings.ifEmpty { armMappings }
+                            val effectiveArm = if (first.isMovie) armMappings else seasonalArmMappings.ifEmpty { armMappings }
                             for (seasonRow in sortedSeasons) {
                                 val matchedCours = resolveCandidatesForSeason(
                                     seasonNumber = seasonRow.seasonNumber,
@@ -1440,9 +1485,10 @@ class AppViewModel(
 
                                 var epOffset = 0
                                 for (courAnime in matchedCours) {
-                                    val courTotalEps = maxOf(courAnime.releasedEpisodes, courAnime.totalEpisodes ?: 0)
-                                    val effectiveCourSize = if (courTotalEps > 0) {
-                                        courTotalEps
+                                    val courReleasedEps = courAnime.releasedEpisodes.takeIf { it > 0 }
+                                        ?: (courAnime.totalEpisodes ?: 0)
+                                    val effectiveCourSize = if (courReleasedEps > 0) {
+                                        courReleasedEps
                                     } else {
                                         seasonRow.watchedEpisodes.maxOrNull() ?: 1
                                     }
@@ -1476,11 +1522,11 @@ class AppViewModel(
 
                                     epOffset += effectiveCourSize
                                     if (epMap.isNotEmpty() && highestEpInt > 0) {
-                                        val atLatest = courTotalEps > 0 && highestEpInt >= courTotalEps
+                                        val atLatest = courReleasedEps > 0 && highestEpInt >= courReleasedEps
                                         mergedHistory.add(
                                             WatchHistoryEntry(
                                                 anime = courAnime.copy(
-                                                    releasedEpisodes = maxOf(courAnime.releasedEpisodes, courTotalEps),
+                                                    releasedEpisodes = maxOf(courAnime.releasedEpisodes, courReleasedEps),
                                                 ),
                                                 currentEpisodeNum = highestEpInt.toString(),
                                                 currentVideoId = "",
@@ -1488,6 +1534,7 @@ class AppViewModel(
                                                 durationMs = epDurationMs,
                                                 completed = true,
                                                 isAtLatestEpisode = atLatest,
+                                                hiddenFromContinueWatching = hideInContinueWatching,
                                                 updatedAt = latestTs,
                                                 episodesProgress = epMap,
                                             )
@@ -1568,9 +1615,12 @@ class AppViewModel(
         anime: AnimeItem,
         knownEpCount: Int,
         watchedTimestamps: List<Long>,
+        hiddenFromContinueWatching: Boolean = false,
     ): WatchHistoryEntry? {
         if (watchedTimestamps.isEmpty()) return null
-        val totalAvailable = maxOf(knownEpCount, anime.releasedEpisodes, anime.totalEpisodes ?: 0)
+        val totalAvailable = knownEpCount.takeIf { it > 0 }
+            ?: anime.releasedEpisodes.takeIf { it > 0 }
+            ?: (anime.totalEpisodes ?: 0)
         val count = if (totalAvailable > 0) minOf(watchedTimestamps.size, totalAvailable) else watchedTimestamps.size
         if (count <= 0) return null
 
@@ -1599,6 +1649,7 @@ class AppViewModel(
             durationMs = epDurationMs,
             completed = true,
             isAtLatestEpisode = atLatest,
+            hiddenFromContinueWatching = hiddenFromContinueWatching,
             updatedAt = maxTs,
             episodesProgress = epMap,
         )

@@ -1,12 +1,12 @@
 (() => {
   const REPO = "Carloj005/aw-android";
   const FALLBACK_RELEASE = {
-    tag_name: "v1.4.3",
-    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.3/AW-Anime-v1.4.3.apk",
-    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.3/AW-Anime-v1.4.3.apk.sha256",
+    tag_name: "v1.4.4",
+    apk_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.4/AW-Anime-v1.4.4.apk",
+    sha_url: "https://github.com/Carloj005/aw-android/releases/download/v1.4.4/AW-Anime-v1.4.4.apk.sha256",
     size_mb: "2.8 MB",
     date: "Ultima release",
-    notes: "Risolto blocco 403 dopo import Suite TV, copertine ripristinate e fix serie lunghe finite (come Yu-Gi-Oh!) in Continua a guardare.",
+    notes: "Nuovo tasto rapido ✕ su Continua a guardare, fix anime in corso in pari (JoJo), fix anime interrotti Suite TV (Azur Lane) e fix conflitto Yu-Gi-Oh!.",
   };
 
   // 1. Theme toggle (Dark / Light Material You)

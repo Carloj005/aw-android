@@ -20,6 +20,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -376,6 +377,7 @@ fun ContinueWatchingCard(
     entry: WatchHistoryEntry,
     onResume: () -> Unit,
     onOpenDetail: () -> Unit,
+    onDismiss: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -432,6 +434,26 @@ fun ContinueWatchingCard(
                         .align(Alignment.TopStart)
                         .padding(10.dp),
                 )
+
+                if (onDismiss != null) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(Color(0x99000000))
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Rimuovi da Continua a guardare",
+                            tint = Color.White,
+                            modifier = Modifier.size(15.dp),
+                        )
+                    }
+                }
 
                 val statusText = if (entry.completed) {
                     "Ep. ${entry.currentEpisodeNum} ✓"

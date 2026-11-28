@@ -658,6 +658,7 @@ private fun AwAnimeRoot(
                     onAnimeClick = { vm.openAnimeDetail(it) },
                     onQuickWatch = { vm.quickWatchAnime(it) },
                     onResumeHistory = { vm.resumeFromHistory(it) },
+                    onDismissHistory = { vm.hideFromContinueWatching(it) },
                     gridState = homeGridState,
                 )
 

@@ -7,7 +7,7 @@ Project instructions and engineering invariants for Antigravity / AI coding agen
 - **Stack**: Kotlin 2.3, Jetpack Compose, Material You 3 Expressive, Media3 ExoPlayer (HLS/MP4), OkHttp 4, Coil 2, WorkManager 2.10, `kotlinx.serialization`, `kotlinx.coroutines`.
 - **SDK & Build**: `minSdk = 26`, `compileSdk = 36`, `targetSdk = 36`, `buildToolsVersion = "36.1.0"`, **JDK 21** (`jvmToolchain(21)`), AGP `9.0.1` (R8 Full Mode enabled for release).
 - **Website (GitHub Pages)**: Served from `main:/docs` at `https://carloj005.github.io/aw-android/` (`docs/index.html`, `docs/styles.css`, `docs/app.js`, `docs/favicon.svg`, `docs/.nojekyll`).
-- **Latest baseline**: `v1.4.3` (`versionCode = 13`).
+- **Latest baseline**: `v1.4.4` (`versionCode = 14`).
 
 ## 2. Architecture Map
 All source files live under `app/src/main/kotlin/com/carloj005/awanime/`:

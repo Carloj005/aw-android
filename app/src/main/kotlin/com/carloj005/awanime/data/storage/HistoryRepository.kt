@@ -70,6 +70,7 @@ class HistoryRepository(
                 durationMs = durationMs.coerceAtLeast(0L),
                 completed = completed,
                 isAtLatestEpisode = completed && isAtLatestEpisode,
+                hiddenFromContinueWatching = false,
                 updatedAt = now,
                 episodesProgress = mergedEps,
             )
@@ -126,6 +127,18 @@ class HistoryRepository(
         }
     }
 
+    fun hideFromContinueWatching(uniqueKey: String) {
+        store.update { current ->
+            current.map { entry ->
+                if (entry.uniqueKey == uniqueKey) {
+                    entry.copy(hiddenFromContinueWatching = true)
+                } else {
+                    entry
+                }
+            }
+        }
+    }
+
     fun remove(uniqueKey: String) {
         store.update { current -> current.filterNot { it.uniqueKey == uniqueKey } }
     }
@@ -157,8 +170,11 @@ class HistoryRepository(
                         else -> prev
                     }
                     val fallbackAnime = if (primary === inc) prev.anime else inc.anime
+                    val shouldHide = inc.hiddenFromContinueWatching ||
+                        (prev.hiddenFromContinueWatching && prev.updatedAt >= inc.updatedAt)
                     byKey[inc.uniqueKey] = primary.copy(
                         anime = mergeRichAnimeMetadata(primary.anime, fallbackAnime),
+                        hiddenFromContinueWatching = shouldHide,
                         updatedAt = maxOf(prev.updatedAt, inc.updatedAt),
                         episodesProgress = mergedEps,
                     )

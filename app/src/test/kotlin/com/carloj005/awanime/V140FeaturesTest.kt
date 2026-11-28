@@ -551,4 +551,75 @@ class V140FeaturesTest {
         jar.clear()
         assertTrue(jar.loadForRequest(url).isEmpty())
     }
+
+    @Test
+    fun watchHistoryEntry_caughtUpRespectsReleasedEpisodesAndHideFromContinueWatching() = runTest {
+        val tempDir = Files.createTempDirectory("aw_hist_hide_test").toFile()
+        try {
+            // Ongoing anime with 10/11 released episodes (e.g. JoJo Steel Ball Run): finishing Ep 10 is caught up!
+            val ongoingAnime = AnimeItem(
+                id = "7808",
+                title = "Le Bizzarre Avventure di JoJo: Steel Ball Run 2nd - 3rd Stage (ITA)",
+                isDub = true,
+                releasedEpisodes = 10,
+                totalEpisodes = 11,
+            )
+            val atLatestReleased = WatchHistoryEntry(
+                anime = ongoingAnime,
+                currentEpisodeNum = "10",
+                currentVideoId = "",
+                completed = true,
+                isAtLatestEpisode = false,
+            )
+            assertTrue(atLatestReleased.isCaughtUp)
+            assertFalse(atLatestReleased.shouldShowInContinueWatching)
+
+            // When Ep 11 releases, it automatically reappears in Continue Watching
+            val ep11Released = atLatestReleased.copy(anime = ongoingAnime.copy(releasedEpisodes = 11))
+            assertFalse(ep11Released.isCaughtUp)
+            assertTrue(ep11Released.shouldShowInContinueWatching)
+
+            // Stopped/dropped anime (e.g. Azur Lane Ep 1/12) hidden via 1-tap dismiss or Suite TV isStopped
+            val repo = HistoryRepository(tempDir)
+            val droppedAnime = AnimeItem(id = "3672", title = "Azur Lane", releasedEpisodes = 12, totalEpisodes = 12)
+            repo.mergeImport(
+                listOf(
+                    WatchHistoryEntry(
+                        anime = droppedAnime,
+                        currentEpisodeNum = "1",
+                        currentVideoId = "",
+                        completed = true,
+                        isAtLatestEpisode = false,
+                        hiddenFromContinueWatching = false,
+                        updatedAt = 1_654_383_643_000L,
+                    )
+                )
+            )
+            assertTrue(repo.getEntry("3672_sub")!!.shouldShowInContinueWatching)
+
+            // Re-importing with hiddenFromContinueWatching = true (Suite TV isStopped) hides it
+            repo.mergeImport(
+                listOf(
+                    WatchHistoryEntry(
+                        anime = droppedAnime,
+                        currentEpisodeNum = "1",
+                        currentVideoId = "",
+                        completed = true,
+                        isAtLatestEpisode = false,
+                        hiddenFromContinueWatching = true,
+                        updatedAt = 1_654_383_643_000L,
+                    )
+                )
+            )
+            assertFalse(repo.getEntry("3672_sub")!!.shouldShowInContinueWatching)
+
+            // Watching Ep 2 later restores it to Continue Watching, and hideFromContinueWatching hides it again
+            repo.updateProgress(droppedAnime, "2", "v2", positionMs = 300_000L, durationMs = 1_440_000L)
+            assertTrue(repo.getEntry("3672_sub")!!.shouldShowInContinueWatching)
+            repo.hideFromContinueWatching("3672_sub")
+            assertFalse(repo.getEntry("3672_sub")!!.shouldShowInContinueWatching)
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }

@@ -10,6 +10,7 @@ import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.network.SearchUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -68,6 +69,11 @@ data class ArmSeasonMapping(
     val tvdbSeason: Int? = null,
     val tmdbId: Int? = null,
     val media: String? = null,
+)
+
+data class ArmLookupResult(
+    val mappings: List<ArmSeasonMapping>,
+    val confirmedNotAnime: Boolean = false,
 )
 
 data class SuiteTvImportedShow(
@@ -256,40 +262,64 @@ object SuiteTvIntegration {
 
     /**
      * Reverse-maps a TheTVDB series ID (from Suite TV `shows.ndjson`) into all matching anime
-     * seasons (`anilistId`, `malId`, `tvdbSeason`). Returns an empty list for non-anime live-action
-     * shows (e.g. Breaking Bad, House of the Dragon) so import skips them immediately.
+     * seasons (`anilistId`, `malId`, `tvdbSeason`), distinguishing confirmed HTTP 404 non-anime
+     * (`confirmedNotAnime = true`) from transient network/429 errors (`confirmedNotAnime = false`).
      */
+    suspend fun lookupArmByTvdbId(
+        httpClient: OkHttpClient,
+        tvdbId: Int,
+    ): ArmLookupResult = withContext(Dispatchers.IO) {
+        if (tvdbId <= 0) return@withContext ArmLookupResult(emptyList(), confirmedNotAnime = false)
+        armByTvdbCache[tvdbId]?.let { cached ->
+            return@withContext ArmLookupResult(cached, confirmedNotAnime = cached.isEmpty())
+        }
+        val parsed = fetchArmReverseListWithRetry(httpClient, "$ARM_API_V2_BASE/thetvdb?id=$tvdbId")
+        if (parsed != null) {
+            armByTvdbCache[tvdbId] = parsed
+            ArmLookupResult(parsed, confirmedNotAnime = parsed.isEmpty())
+        } else {
+            ArmLookupResult(emptyList(), confirmedNotAnime = false)
+        }
+    }
+
     suspend fun resolveArmByTvdbId(
         httpClient: OkHttpClient,
         tvdbId: Int,
-    ): List<ArmSeasonMapping> = withContext(Dispatchers.IO) {
-        if (tvdbId <= 0) return@withContext emptyList()
-        armByTvdbCache[tvdbId]?.let { return@withContext it }
-        val parsed = fetchArmReverseList(httpClient, "$ARM_API_V2_BASE/thetvdb?id=$tvdbId")
-        if (parsed != null) {
-            armByTvdbCache[tvdbId] = parsed
-            parsed
-        } else {
-            emptyList()
-        }
-    }
+    ): List<ArmSeasonMapping> = lookupArmByTvdbId(httpClient, tvdbId).mappings
 
     /**
      * Reverse-maps a TMDB ID (from Suite TV `movies.ndjson`) into matching anime movie IDs.
      */
+    suspend fun lookupArmByTmdbId(
+        httpClient: OkHttpClient,
+        tmdbId: Int,
+    ): ArmLookupResult = withContext(Dispatchers.IO) {
+        if (tmdbId <= 0) return@withContext ArmLookupResult(emptyList(), confirmedNotAnime = false)
+        armByTmdbCache[tmdbId]?.let { cached ->
+            return@withContext ArmLookupResult(cached, confirmedNotAnime = cached.isEmpty())
+        }
+        val parsed = fetchArmReverseListWithRetry(httpClient, "$ARM_API_V2_BASE/themoviedb?id=$tmdbId")
+        if (parsed != null) {
+            armByTmdbCache[tmdbId] = parsed
+            ArmLookupResult(parsed, confirmedNotAnime = parsed.isEmpty())
+        } else {
+            ArmLookupResult(emptyList(), confirmedNotAnime = false)
+        }
+    }
+
     suspend fun resolveArmByTmdbId(
         httpClient: OkHttpClient,
         tmdbId: Int,
-    ): List<ArmSeasonMapping> = withContext(Dispatchers.IO) {
-        if (tmdbId <= 0) return@withContext emptyList()
-        armByTmdbCache[tmdbId]?.let { return@withContext it }
-        val parsed = fetchArmReverseList(httpClient, "$ARM_API_V2_BASE/themoviedb?id=$tmdbId")
-        if (parsed != null) {
-            armByTmdbCache[tmdbId] = parsed
-            parsed
-        } else {
-            emptyList()
-        }
+    ): List<ArmSeasonMapping> = lookupArmByTmdbId(httpClient, tmdbId).mappings
+
+    private suspend fun fetchArmReverseListWithRetry(
+        httpClient: OkHttpClient,
+        url: String,
+    ): List<ArmSeasonMapping>? {
+        val first = fetchArmReverseList(httpClient, url)
+        if (first != null) return first
+        delay(600L)
+        return fetchArmReverseList(httpClient, url)
     }
 
     private fun fetchArmReverseList(httpClient: OkHttpClient, url: String): List<ArmSeasonMapping>? {

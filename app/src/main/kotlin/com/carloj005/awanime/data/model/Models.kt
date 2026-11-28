@@ -251,6 +251,7 @@ data class WatchHistoryEntry(
     val durationMs: Long = 0L,
     val completed: Boolean = false,
     val isAtLatestEpisode: Boolean = false,
+    val hiddenFromContinueWatching: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
     val episodesProgress: Map<String, EpisodeProgress> = emptyMap(),
 ) {
@@ -273,15 +274,20 @@ data class WatchHistoryEntry(
             if (!completed) return false
             if (isAtLatestEpisode) return true
             val epInt = currentEpisodeNum.trim().split(".", "-").firstOrNull()?.toIntOrNull()
-            val knownMax = anime.totalEpisodes?.takeIf { it > 0 }
-                ?: anime.releasedEpisodes.takeIf { it > 0 }
-            if (epInt != null && knownMax != null && epInt >= knownMax) return true
+            val knownReleased = anime.releasedEpisodes.takeIf { it > 0 }
+            val knownTotal = anime.totalEpisodes?.takeIf { it > 0 }
+            val effectiveLatest = when {
+                knownReleased != null && knownTotal != null -> minOf(knownReleased, knownTotal)
+                knownReleased != null -> knownReleased
+                else -> knownTotal
+            }
+            if (epInt != null && effectiveLatest != null && epInt >= effectiveLatest) return true
             if (anime.type.equals("Movie", ignoreCase = true) && epInt == 1) return true
             return false
         }
 
     val shouldShowInContinueWatching: Boolean
-        get() = !isCaughtUp
+        get() = !hiddenFromContinueWatching && !isCaughtUp
 }
 
 data class ResumeTarget(

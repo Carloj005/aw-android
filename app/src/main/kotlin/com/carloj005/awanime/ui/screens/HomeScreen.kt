@@ -79,6 +79,7 @@ fun HomeScreen(
     onAnimeClick: (AnimeItem) -> Unit,
     onQuickWatch: (AnimeItem) -> Unit,
     onResumeHistory: (WatchHistoryEntry) -> Unit,
+    onDismissHistory: (String) -> Unit = {},
     gridState: LazyGridState = rememberLazyGridState(),
     modifier: Modifier = Modifier,
 ) {
@@ -286,6 +287,7 @@ fun HomeScreen(
                                                 entry = entry,
                                                 onResume = { onResumeHistory(entry) },
                                                 onOpenDetail = { onAnimeClick(entry.anime) },
+                                                onDismiss = { onDismissHistory(entry.uniqueKey) },
                                             )
                                         }
                                     }
