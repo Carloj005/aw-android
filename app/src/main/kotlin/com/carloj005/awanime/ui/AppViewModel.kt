@@ -18,11 +18,16 @@ import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.AppBackupData
 import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.CalendarDayGroup
+import com.carloj005.awanime.data.model.DiscoveredSequel
 import com.carloj005.awanime.data.model.DownloadEntry
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.EpisodeItem
+import com.carloj005.awanime.data.model.GenreItem
 import com.carloj005.awanime.data.model.LatestFilter
 import com.carloj005.awanime.data.model.SearchFilter
+import com.carloj005.awanime.data.model.SearchSortOrder
+import com.carloj005.awanime.data.model.SearchTypeFilter
+import com.carloj005.awanime.data.model.TrackedNotificationPrefs
 import com.carloj005.awanime.data.model.UpdateInfo
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.model.resolveResumeTarget
@@ -30,15 +35,18 @@ import com.carloj005.awanime.data.network.AnimeUnityClient
 import com.carloj005.awanime.data.network.OfflineException
 import com.carloj005.awanime.data.network.SearchUtils
 import com.carloj005.awanime.data.notifications.FavoriteEpisodeNotificationManager
+import com.carloj005.awanime.data.notifications.SequelTracker
 import com.carloj005.awanime.data.storage.DownloadRepository
 import com.carloj005.awanime.data.storage.FavoritesRepository
 import com.carloj005.awanime.data.storage.HistoryRepository
 import com.carloj005.awanime.data.storage.SettingsRepository
+import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
 import com.carloj005.awanime.data.update.AppUpdater
 import com.carloj005.awanime.ui.screens.SettingsEvent
 import com.carloj005.awanime.util.runCatchingCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,10 +60,10 @@ import java.io.File
 import java.io.IOException
 
 enum class CalendarFilter(val label: String) {
+    MY_ANIME("I miei"),
     ALL("Tutti"),
     SUB("SUB"),
     DUB("ITA"),
-    FAVORITES("Preferiti"),
 }
 
 data class HomeUiState(
@@ -71,7 +79,7 @@ data class HomeUiState(
 data class CalendarUiState(
     val days: List<CalendarDayGroup> = emptyList(),
     val selectedDayIndex: Int = 0,
-    val filter: CalendarFilter = CalendarFilter.ALL,
+    val filter: CalendarFilter = CalendarFilter.MY_ANIME,
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
     val hasLoaded: Boolean = false,
@@ -80,7 +88,13 @@ data class CalendarUiState(
 
 data class SearchUiState(
     val query: String = "",
+    val expandedAliasHint: String? = null,
     val filter: SearchFilter = SearchFilter.ALL,
+    val typeFilter: SearchTypeFilter = SearchTypeFilter.ALL,
+    val sortOrder: SearchSortOrder = SearchSortOrder.CHRONOLOGICAL,
+    val genres: List<GenreItem> = emptyList(),
+    val selectedGenreId: Int? = null,
+    val isLoadingGenres: Boolean = false,
     val results: List<AnimeItem> = emptyList(),
     val isLoading: Boolean = false,
     val hasSearched: Boolean = false,
@@ -91,8 +105,17 @@ data class SearchUiState(
 data class DetailUiState(
     val anime: AnimeItem? = null,
     val episodes: List<EpisodeItem> = emptyList(),
+    val relatedAnimes: List<AnimeItem> = emptyList(),
+    val nextSeason: AnimeItem? = null,
     val isLoading: Boolean = false,
     val error: String? = null,
+)
+
+data class RandomAnimeUiState(
+    val isLoading: Boolean = false,
+    val anime: AnimeItem? = null,
+    val error: String? = null,
+    val showDialog: Boolean = false,
 )
 
 data class PlayerLaunchRequest(
@@ -119,6 +142,7 @@ class AppViewModel(
     private val client: AnimeUnityClient,
     private val historyRepo: HistoryRepository,
     private val favoritesRepo: FavoritesRepository,
+    private val trackedRepo: TrackedNotificationsRepository,
     private val downloadRepo: DownloadRepository,
     private val settingsRepo: SettingsRepository,
     private val notificationManager: FavoriteEpisodeNotificationManager,
@@ -132,6 +156,7 @@ class AppViewModel(
         private const val KEY_SAVED_DETAIL_TITLE = "saved_detail_title"
         private const val KEY_SAVED_DETAIL_DUB = "saved_detail_dub"
         private const val MAX_RECENT_QUERIES = 10
+        private const val SEARCH_DEBOUNCE_MS = 450L
         private const val MAX_BACKUP_IMPORT_BYTES = 10 * 1024 * 1024 // 10 MB anti-OOM/ANR cap
 
         val Factory: ViewModelProvider.Factory = viewModelFactory {
@@ -142,6 +167,7 @@ class AppViewModel(
                     client = container.animeUnityClient,
                     historyRepo = container.historyRepository,
                     favoritesRepo = container.favoritesRepository,
+                    trackedRepo = container.trackedNotificationsRepository,
                     downloadRepo = container.downloadRepository,
                     settingsRepo = container.settingsRepository,
                     notificationManager = container.favoriteNotificationManager,
@@ -155,6 +181,7 @@ class AppViewModel(
 
     val history: StateFlow<List<WatchHistoryEntry>> = historyRepo.history
     val favorites: StateFlow<List<AnimeItem>> = favoritesRepo.favorites
+    val trackedNotificationPrefs: StateFlow<TrackedNotificationPrefs> = trackedRepo.prefs
     val downloads: StateFlow<List<DownloadEntry>> = downloadRepo.downloads
     val settings: StateFlow<AppSettings> = settingsRepo.settings
 
@@ -165,7 +192,10 @@ class AppViewModel(
     private var homeJob: Job? = null
     private var calendarJob: Job? = null
     private var searchJob: Job? = null
+    private var searchDebounceJob: Job? = null
+    private var genresJob: Job? = null
     private var detailJob: Job? = null
+    private var randomJob: Job? = null
     private var playbackLaunchJob: Job? = null
     private var updateJob: Job? = null
     private var favoriteCheckJob: Job? = null
@@ -181,6 +211,12 @@ class AppViewModel(
 
     private val _detailState = MutableStateFlow(DetailUiState())
     val detailState: StateFlow<DetailUiState> = _detailState.asStateFlow()
+
+    private val _randomAnimeState = MutableStateFlow(RandomAnimeUiState())
+    val randomAnimeState: StateFlow<RandomAnimeUiState> = _randomAnimeState.asStateFlow()
+
+    private val _discoveredSequels = MutableStateFlow<List<DiscoveredSequel>>(emptyList())
+    val discoveredSequels: StateFlow<List<DiscoveredSequel>> = _discoveredSequels.asStateFlow()
 
     private val _activePlayer = MutableStateFlow<PlayerLaunchRequest?>(null)
     val activePlayer: StateFlow<PlayerLaunchRequest?> = _activePlayer.asStateFlow()
@@ -263,29 +299,34 @@ class AppViewModel(
 
         detailJob = viewModelScope.launch {
             runCatchingCancellable {
-                val primaryAnime = runCatchingCancellable { client.getAnimeDetails(animeId, isDubHint) }
-                    .getOrDefault(placeholder)
+                val primaryResult = runCatchingCancellable { client.getAnimeDetailsWithRelated(animeId, isDubHint) }.getOrNull()
+                val primaryAnime = primaryResult?.anime ?: placeholder
+                val primaryRelated = primaryResult?.relatedAnimes.orEmpty()
                 val primaryEps = client.getEpisodes(primaryAnime.id, primaryAnime.isDub)
                 val primaryIdx = primaryEps.indexOfFirst { it.videoId == videoId }
                 if (primaryIdx >= 0) {
-                    return@runCatchingCancellable Triple(primaryAnime, primaryEps, primaryIdx)
+                    return@runCatchingCancellable Triple(primaryAnime to primaryRelated, primaryEps, primaryIdx)
                 }
 
                 // Shared episode link may belong to the alternate language variant (SUB vs ITA)
                 val altDub = !isDubHint
                 val hasAltVariant = if (altDub) primaryAnime.hasDubVariant else primaryAnime.hasSubVariant
                 if (hasAltVariant) {
-                    val altAnime = runCatchingCancellable { client.getAnimeDetails(primaryAnime.id, altDub) }
-                        .getOrDefault(primaryAnime.copy(isDub = altDub, audioLabel = if (altDub) "Italiano" else "Giapponese"))
+                    val altResult = runCatchingCancellable { client.getAnimeDetailsWithRelated(primaryAnime.id, altDub) }.getOrNull()
+                    val altAnime = altResult?.anime
+                        ?: primaryAnime.copy(isDub = altDub, audioLabel = if (altDub) "Italiano" else "Giapponese")
+                    val altRelated = altResult?.relatedAnimes ?: primaryRelated
                     val altEps = runCatchingCancellable { client.getEpisodes(altAnime.id, altDub) }
                         .getOrDefault(emptyList())
                     val altIdx = altEps.indexOfFirst { it.videoId == videoId }
                     if (altIdx >= 0) {
-                        return@runCatchingCancellable Triple(altAnime, altEps, altIdx)
+                        return@runCatchingCancellable Triple(altAnime to altRelated, altEps, altIdx)
                     }
                 }
-                Triple(primaryAnime, primaryEps, -1)
-            }.onSuccess { (resolvedAnime, eps, matchedIdx) ->
+                Triple(primaryAnime to primaryRelated, primaryEps, -1)
+            }.onSuccess { (animeAndRelated, eps, matchedIdx) ->
+                val (resolvedAnime, related) = animeAndRelated
+                val nextSeason = SequelTracker.findNextSeason(resolvedAnime, related)
                 savedStateHandle[KEY_SAVED_DETAIL_TITLE] = resolvedAnime.title
                 savedStateHandle[KEY_SAVED_DETAIL_DUB] = resolvedAnime.isDub
                 historyRepo.syncKnownEpisodeAvailability(
@@ -296,6 +337,8 @@ class AppViewModel(
                 _detailState.value = DetailUiState(
                     anime = resolvedAnime,
                     episodes = eps,
+                    relatedAnimes = related,
+                    nextSeason = nextSeason,
                     isLoading = false,
                     error = null,
                 )
@@ -357,6 +400,7 @@ class AppViewModel(
                         )
                     }
                 }
+                scanFeedForNewSeasons(list + carousel)
                 _homeState.update { st ->
                     st.copy(
                         selectedFilter = filter,
@@ -399,6 +443,20 @@ class AppViewModel(
         calendarJob = viewModelScope.launch {
             runCatchingCancellable { client.getWeeklyCalendar() }
                 .onSuccess { days ->
+                    val allEntries = days.flatMap { it.entries }
+                    for (entry in allEntries) {
+                        val airedInt = entry.airedEpisodeNumber?.trim()?.split(".", "-")?.firstOrNull()?.toIntOrNull() ?: 0
+                        val avail = maxOf(entry.anime.releasedEpisodes, airedInt)
+                        if (avail > 0) {
+                            historyRepo.syncKnownEpisodeAvailability(
+                                uniqueKey = entry.anime.uniqueKey,
+                                availableEpisodes = avail,
+                                lastEpisodeNum = entry.airedEpisodeNumber,
+                            )
+                        }
+                    }
+                    scanFeedForNewSeasons(allEntries.map { it.anime })
+
                     val defaultDayIdx = days.indexOfFirst { it.isToday }.takeIf { it >= 0 } ?: 0
                     _calendarState.update { st ->
                         st.copy(
@@ -427,6 +485,48 @@ class AppViewModel(
         }
     }
 
+    /**
+     * Checks live feed items against the user's library (Favorites + History): if a newer season
+     * of a franchise the user watched/saved appears (e.g. Solo Leveling S3), it is automatically
+     * saved to Favorites, enabled for notifications, and surfaced via the discovered-sequels banner.
+     */
+    private suspend fun scanFeedForNewSeasons(feedCandidates: List<AnimeItem>) {
+        if (feedCandidates.isEmpty()) return
+        val favs = favoritesRepo.awaitLoaded()
+        val hist = historyRepo.awaitLoaded()
+        val prefs = trackedRepo.awaitLoaded()
+
+        val userLibraryByKey = LinkedHashMap<String, AnimeItem>()
+        for (fav in favs) userLibraryByKey[fav.uniqueKey] = fav
+        for (h in hist) userLibraryByKey.putIfAbsent(h.uniqueKey, h.anime)
+        if (userLibraryByKey.isEmpty()) return
+
+        val found = SequelTracker.detectNewSeasonsInFeed(
+            userLibrary = userLibraryByKey.values.toList(),
+            feedCandidates = feedCandidates,
+            knownUserKeys = userLibraryByKey.keys,
+            alreadyDiscoveredKeys = prefs.discoveredSequelKeys,
+        )
+        if (found.isEmpty()) return
+
+        for (seq in found) {
+            if (!favoritesRepo.isFavorite(seq.newSeason.uniqueKey)) {
+                favoritesRepo.toggleFavorite(seq.newSeason)
+            }
+            trackedRepo.setAnimeNotificationEnabled(seq.newSeason.uniqueKey, enabled = true)
+            trackedRepo.markSequelDiscovered(seq.newSeason.uniqueKey)
+            notificationManager.recordKnownEpisodeCount(seq.newSeason, seq.newSeason.releasedEpisodes)
+        }
+        _discoveredSequels.update { existing ->
+            val existingKeys = existing.map { it.newSeason.uniqueKey }.toSet()
+            existing + found.filter { it.newSeason.uniqueKey !in existingKeys }
+        }
+    }
+
+    fun dismissDiscoveredSequel(uniqueKey: String) {
+        _discoveredSequels.update { list -> list.filterNot { it.newSeason.uniqueKey == uniqueKey } }
+    }
+
     fun selectCalendarDay(index: Int) {
         _calendarState.update { st ->
             st.copy(selectedDayIndex = index.coerceIn(0, (st.days.size - 1).coerceAtLeast(0)))
@@ -437,12 +537,136 @@ class AppViewModel(
         _calendarState.update { it.copy(filter = filter) }
     }
 
+    fun toggleAnimeNotification(anime: AnimeItem) {
+        val favKeys = favorites.value.map { it.uniqueKey }.toSet()
+        val watchingKeys = history.value.map { it.uniqueKey }.toSet()
+        val currentlyEnabled = trackedRepo.isEnabledForAnime(anime.uniqueKey, favKeys, watchingKeys)
+        val nextEnabled = !currentlyEnabled
+        trackedRepo.setAnimeNotificationEnabled(anime.uniqueKey, nextEnabled)
+        if (nextEnabled) {
+            // Ensure anime tracked via bell from Calendar/Detail is also retained in Favorites so
+            // background notification worker and personalized Calendar always include it.
+            if (anime.uniqueKey !in favKeys && anime.uniqueKey !in watchingKeys) {
+                favoritesRepo.toggleFavorite(anime)
+            }
+            val loadedEpCount = if (_detailState.value.anime?.uniqueKey == anime.uniqueKey) {
+                _detailState.value.episodes.size
+            } else {
+                0
+            }
+            notificationManager.recordKnownEpisodeCount(anime, maxOf(loadedEpCount, anime.releasedEpisodes))
+        }
+    }
+
+    fun ensureGenresLoaded() {
+        val st = _searchState.value
+        if (st.genres.isNotEmpty() || st.isLoadingGenres) return
+        genresJob?.cancel()
+        _searchState.update { it.copy(isLoadingGenres = true) }
+        genresJob = viewModelScope.launch {
+            runCatchingCancellable { client.getGenres() }
+                .onSuccess { list ->
+                    _searchState.update { it.copy(genres = list, isLoadingGenres = false) }
+                }
+                .onFailure {
+                    _searchState.update { it.copy(isLoadingGenres = false) }
+                }
+        }
+    }
+
     fun updateSearchQuery(newQuery: String) {
+        searchDebounceJob?.cancel()
         _searchState.update { it.copy(query = newQuery) }
+        val trimmed = newQuery.trim()
+        val st = _searchState.value
+        if (trimmed.isEmpty() && st.selectedGenreId == null && st.typeFilter == SearchTypeFilter.ALL) {
+            searchJob?.cancel()
+            _searchState.update {
+                it.copy(
+                    hasSearched = false,
+                    results = emptyList(),
+                    error = null,
+                    expandedAliasHint = null,
+                    isLoading = false,
+                )
+            }
+            return
+        }
+        if (trimmed.length >= 3) {
+            searchDebounceJob = viewModelScope.launch {
+                delay(SEARCH_DEBOUNCE_MS)
+                performSearch(rawQuery = trimmed, saveToRecent = false)
+            }
+        } else if (trimmed.isEmpty() && (st.selectedGenreId != null || st.typeFilter != SearchTypeFilter.ALL)) {
+            performSearch(rawQuery = "", saveToRecent = false)
+        }
     }
 
     fun setSearchFilter(filter: SearchFilter) {
         _searchState.update { it.copy(filter = filter) }
+    }
+
+    fun selectSearchGenre(genreId: Int?) {
+        val nextGenre = if (_searchState.value.selectedGenreId == genreId) null else genreId
+        _searchState.update { it.copy(selectedGenreId = nextGenre) }
+        val st = _searchState.value
+        if (nextGenre != null || st.query.isNotBlank() || st.typeFilter != SearchTypeFilter.ALL) {
+            performSearch(rawQuery = st.query, saveToRecent = false)
+        } else {
+            searchJob?.cancel()
+            _searchState.update {
+                it.copy(hasSearched = false, results = emptyList(), error = null, isLoading = false)
+            }
+        }
+    }
+
+    fun setSearchTypeFilter(typeFilter: SearchTypeFilter) {
+        _searchState.update { it.copy(typeFilter = typeFilter) }
+        val st = _searchState.value
+        if (typeFilter != SearchTypeFilter.ALL || st.selectedGenreId != null || st.query.isNotBlank()) {
+            performSearch(rawQuery = st.query, saveToRecent = false)
+        } else {
+            searchJob?.cancel()
+            _searchState.update {
+                it.copy(hasSearched = false, results = emptyList(), error = null, isLoading = false)
+            }
+        }
+    }
+
+    fun setSearchSortOrder(order: SearchSortOrder) {
+        val prev = _searchState.value
+        val activeQuery = prev.expandedAliasHint ?: prev.query
+        val resorted = SearchUtils.sortByUserOrder(prev.results, activeQuery, order)
+        _searchState.update { it.copy(sortOrder = order, results = resorted) }
+
+        // If browsing archive by genre/type with no text query and selecting SCORE, fetch server-side top rated
+        if (order == SearchSortOrder.SCORE &&
+            prev.query.isBlank() &&
+            (prev.selectedGenreId != null || prev.typeFilter != SearchTypeFilter.ALL)
+        ) {
+            performSearch(rawQuery = "", saveToRecent = false)
+        }
+    }
+
+    fun clearSearchFilters() {
+        searchDebounceJob?.cancel()
+        val currentQuery = _searchState.value.query.trim()
+        _searchState.update {
+            it.copy(
+                filter = SearchFilter.ALL,
+                typeFilter = SearchTypeFilter.ALL,
+                sortOrder = SearchSortOrder.CHRONOLOGICAL,
+                selectedGenreId = null,
+            )
+        }
+        if (currentQuery.isNotEmpty()) {
+            performSearch(rawQuery = currentQuery, saveToRecent = false)
+        } else {
+            searchJob?.cancel()
+            _searchState.update {
+                it.copy(hasSearched = false, results = emptyList(), error = null, isLoading = false, expandedAliasHint = null)
+            }
+        }
     }
 
     fun clearRecentQueries() {
@@ -450,37 +674,105 @@ class AppViewModel(
         _searchState.update { it.copy(recentQueries = emptyList()) }
     }
 
-    fun performSearch(rawQuery: String = _searchState.value.query) {
+    fun performSearch(rawQuery: String = _searchState.value.query, saveToRecent: Boolean = true) {
+        searchDebounceJob?.cancel()
         val q = rawQuery.trim()
-        if (q.isEmpty()) return
+        val st = _searchState.value
+        val hasArchiveFilters = st.selectedGenreId != null || st.typeFilter != SearchTypeFilter.ALL
+        if (q.isEmpty() && !hasArchiveFilters) return
+
         searchJob?.cancel()
-        val updatedRecent = (listOf(q) + _searchState.value.recentQueries.filterNot { it.equals(q, ignoreCase = true) })
-            .take(MAX_RECENT_QUERIES)
-        settingsRepo.update { it.copy(recentQueries = updatedRecent) }
-        _searchState.update { st ->
-            st.copy(
+        val expanded = if (q.isNotEmpty()) SearchUtils.expandQueryAlias(q) else ""
+        val aliasHint = if (q.isNotEmpty() && !expanded.equals(q, ignoreCase = true)) expanded else null
+
+        val updatedRecent = if (saveToRecent && q.length >= 2) {
+            (listOf(q) + st.recentQueries.filterNot { it.equals(q, ignoreCase = true) })
+                .take(MAX_RECENT_QUERIES)
+                .also { recent -> settingsRepo.update { it.copy(recentQueries = recent) } }
+        } else {
+            st.recentQueries
+        }
+
+        _searchState.update { cur ->
+            cur.copy(
                 query = q,
+                expandedAliasHint = aliasHint,
                 isLoading = true,
                 hasSearched = true,
                 error = null,
                 recentQueries = updatedRecent,
             )
         }
+        val genreId = st.selectedGenreId
+        val typeFilter = st.typeFilter
+        val sortOrder = st.sortOrder
         searchJob = viewModelScope.launch {
-            runCatchingCancellable { client.search(q) }
-                .onSuccess { list ->
-                    _searchState.update { it.copy(results = list, isLoading = false, error = null) }
+            runCatchingCancellable {
+                val rawList = if (genreId != null || typeFilter != SearchTypeFilter.ALL || q.isEmpty()) {
+                    client.browseArchive(
+                        query = q,
+                        genreId = genreId,
+                        typeFilter = typeFilter,
+                        sortByScore = (sortOrder == SearchSortOrder.SCORE),
+                    )
+                } else {
+                    client.search(q)
                 }
-                .onFailure { err ->
-                    _searchState.update {
-                        it.copy(
-                            results = emptyList(),
-                            isLoading = false,
-                            error = err.message ?: "Errore durante la ricerca",
-                        )
-                    }
+                val latestSort = _searchState.value.sortOrder
+                SearchUtils.sortByUserOrder(rawList, expanded.ifEmpty { q }, latestSort)
+            }.onSuccess { list ->
+                _searchState.update { it.copy(results = list, isLoading = false, error = null) }
+            }.onFailure { err ->
+                _searchState.update {
+                    it.copy(
+                        results = emptyList(),
+                        isLoading = false,
+                        error = err.message ?: "Errore durante la ricerca",
+                    )
                 }
+            }
         }
+    }
+
+    fun pickRandomAnime() {
+        randomJob?.cancel()
+        val previousKey = _randomAnimeState.value.anime?.uniqueKey
+        _randomAnimeState.update {
+            it.copy(
+                isLoading = true,
+                error = null,
+                showDialog = true,
+            )
+        }
+        randomJob = viewModelScope.launch {
+            runCatchingCancellable {
+                val excludeKeys = buildSet {
+                    history.value.filter { it.isCaughtUp }.forEach { add(it.uniqueKey) }
+                    if (previousKey != null) add(previousKey)
+                }
+                client.getRandomAnime(excludeUniqueKeys = excludeKeys)
+            }.onSuccess { picked ->
+                _randomAnimeState.value = RandomAnimeUiState(
+                    isLoading = false,
+                    anime = picked,
+                    error = null,
+                    showDialog = true,
+                )
+            }.onFailure { err ->
+                _randomAnimeState.update {
+                    it.copy(
+                        isLoading = false,
+                        error = err.message ?: "Impossibile pescare un anime casuale",
+                        showDialog = true,
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissRandomAnimeDialog() {
+        randomJob?.cancel()
+        _randomAnimeState.update { it.copy(showDialog = false, isLoading = false, error = null) }
     }
 
     fun openAnimeDetail(anime: AnimeItem) {
@@ -492,13 +784,15 @@ class AppViewModel(
 
         detailJob = viewModelScope.launch {
             runCatchingCancellable {
-                val detailResult = runCatchingCancellable { client.getAnimeDetails(anime.id, anime.isDub) }
+                val detailResult = runCatchingCancellable { client.getAnimeDetailsWithRelated(anime.id, anime.isDub) }
                 val detailError = detailResult.exceptionOrNull()
                 if (detailError is OfflineException) throw detailError
-                val fullAnime = detailResult.getOrDefault(anime)
+                val resolved = detailResult.getOrNull()
+                val fullAnime = resolved?.anime ?: anime
+                val related = resolved?.relatedAnimes.orEmpty()
                 val eps = client.getEpisodes(fullAnime.id, fullAnime.isDub)
-                fullAnime to eps
-            }.onSuccess { (fullAnime, eps) ->
+                Triple(fullAnime, related, eps)
+            }.onSuccess { (fullAnime, related, eps) ->
                 if (favoritesRepo.isFavorite(fullAnime.uniqueKey)) {
                     notificationManager.recordKnownEpisodeCount(fullAnime, eps.size)
                 }
@@ -507,9 +801,28 @@ class AppViewModel(
                     availableEpisodes = eps.size,
                     lastEpisodeNum = eps.lastOrNull()?.number,
                 )
+                val nextSeason = SequelTracker.findNextSeason(fullAnime, related)
+
+                // If user already finished this season and a next season exists, auto-save it once!
+                val currentHistory = historyRepo.getEntry(fullAnime.uniqueKey)
+                if (currentHistory?.isCaughtUp == true && nextSeason != null) {
+                    val prefs = trackedRepo.awaitLoaded()
+                    val alreadyKnown = favoritesRepo.isFavorite(nextSeason.uniqueKey) ||
+                        historyRepo.getEntry(nextSeason.uniqueKey) != null ||
+                        nextSeason.uniqueKey in prefs.discoveredSequelKeys
+                    if (!alreadyKnown) {
+                        favoritesRepo.toggleFavorite(nextSeason)
+                        trackedRepo.setAnimeNotificationEnabled(nextSeason.uniqueKey, enabled = true)
+                        trackedRepo.markSequelDiscovered(nextSeason.uniqueKey)
+                        notificationManager.recordKnownEpisodeCount(nextSeason, nextSeason.releasedEpisodes)
+                    }
+                }
+
                 _detailState.value = DetailUiState(
                     anime = fullAnime,
                     episodes = eps,
+                    relatedAnimes = related,
+                    nextSeason = nextSeason,
                     isLoading = false,
                     error = null,
                 )
@@ -692,9 +1005,9 @@ class AppViewModel(
         settingsRepo.update { it.copy(notifyFavoriteEpisodes = enabled) }
         notificationManager.syncPeriodicSchedule(enabled = enabled, intervalHours = interval)
         _settingsFeedback.value = if (enabled) {
-            "Notifiche Preferiti attive (controllo automatico ogni ${interval}h)."
+            "Notifiche anime seguiti attive (controllo automatico ogni ${interval}h + rilevamento nuove stagioni)."
         } else {
-            "Notifiche nuovi episodi Preferiti disattivate."
+            "Notifiche nuovi episodi e nuove stagioni disattivate."
         }
     }
 
@@ -708,19 +1021,35 @@ class AppViewModel(
                     respectSettingToggle = false,
                     postNotifications = true,
                 )
-            }.onSuccess { alerts ->
-                val favCount = favorites.value.size
-                _settingsFeedback.value = when {
-                    favCount == 0 -> "Aggiungi almeno un anime ai Preferiti per ricevere avvisi nuovi episodi."
-                    alerts.isNotEmpty() -> {
-                        val names = alerts.take(2).joinToString(", ") { "${it.anime.title} (Ep. ${it.episodeLabel})" }
-                        val extra = if (alerts.size > 2) " + altri ${alerts.size - 2}" else ""
-                        "Trovati ${alerts.size} nuovi episodi: $names$extra"
+            }.onSuccess { summary ->
+                if (summary.discoveredSequels.isNotEmpty()) {
+                    _discoveredSequels.update { existing ->
+                        val existingKeys = existing.map { it.newSeason.uniqueKey }.toSet()
+                        existing + summary.discoveredSequels.filter { it.newSeason.uniqueKey !in existingKeys }
                     }
-                    else -> "Nessun nuovo episodio per i tuoi $favCount Preferiti (baseline aggiornata)."
+                }
+                _settingsFeedback.value = when {
+                    summary.monitoredCount == 0 && summary.discoveredSequels.isEmpty() ->
+                        "Segna almeno un anime con la campanella 🔔 (o nei Preferiti) per ricevere avvisi."
+                    summary.episodeAlerts.isNotEmpty() || summary.discoveredSequels.isNotEmpty() -> {
+                        val parts = buildList {
+                            if (summary.episodeAlerts.isNotEmpty()) {
+                                val names = summary.episodeAlerts.take(2)
+                                    .joinToString(", ") { "${it.anime.title} (Ep. ${it.episodeLabel})" }
+                                val extra = if (summary.episodeAlerts.size > 2) " + altri ${summary.episodeAlerts.size - 2}" else ""
+                                add("${summary.episodeAlerts.size} nuovi episodi: $names$extra")
+                            }
+                            if (summary.discoveredSequels.isNotEmpty()) {
+                                val seqNames = summary.discoveredSequels.take(2).joinToString(", ") { it.newSeason.title }
+                                add("${summary.discoveredSequels.size} nuove stagioni salvate: $seqNames")
+                            }
+                        }
+                        "Trovati " + parts.joinToString(" • ")
+                    }
+                    else -> "Nessun nuovo episodio per i tuoi ${summary.monitoredCount} anime monitorati (baseline aggiornata)."
                 }
             }.onFailure { err ->
-                _settingsFeedback.value = "Errore controllo Preferiti: ${err.message ?: "rete non disponibile"}"
+                _settingsFeedback.value = "Errore controllo notifiche: ${err.message ?: "rete non disponibile"}"
             }
             _isCheckingFavorites.value = false
         }
@@ -758,7 +1087,7 @@ class AppViewModel(
                 if (settings.value.notifyFavoriteEpisodes) {
                     notificationManager.syncPeriodicSchedule(enabled = true, intervalHours = safeHours)
                 }
-                _settingsFeedback.value = "Intervallo controllo Preferiti impostato a ogni ${safeHours}h."
+                _settingsFeedback.value = "Intervallo controllo impostato a ogni ${safeHours}h."
             }
             SettingsEvent.CheckFavoriteEpisodesNow -> checkFavoriteEpisodesNow()
             is SettingsEvent.ToggleSuiteTvQuickAction -> settingsRepo.update { it.copy(suiteTvQuickAction = event.enabled) }
@@ -770,6 +1099,7 @@ class AppViewModel(
             SettingsEvent.ExportBackup -> onLaunchExportBackup()
             SettingsEvent.ImportBackup -> onLaunchImportBackup()
             SettingsEvent.ClearCache -> clearAppCache()
+            is SettingsEvent.ShowFeedback -> _settingsFeedback.value = event.message
         }
     }
 
@@ -852,11 +1182,12 @@ class AppViewModel(
 
     fun buildBackupJson(): String {
         val data = AppBackupData(
-            schemaVersion = 1,
+            schemaVersion = 2,
             exportedAt = System.currentTimeMillis(),
             settings = settings.value,
             history = history.value,
             favorites = favorites.value,
+            trackedNotifications = trackedNotificationPrefs.value,
         )
         return backupJson.encodeToString(data)
     }
@@ -866,6 +1197,7 @@ class AppViewModel(
             val parsed = backupJson.decodeFromString<AppBackupData>(rawText)
             historyRepo.mergeImport(parsed.history)
             favoritesRepo.mergeImport(parsed.favorites)
+            trackedRepo.mergeImport(parsed.trackedNotifications)
             settingsRepo.replace(parsed.settings)
             notificationManager.syncPeriodicSchedule(
                 enabled = parsed.settings.notifyFavoriteEpisodes,

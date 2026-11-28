@@ -1,8 +1,11 @@
 package com.carloj005.awanime.data.integrations
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.network.SearchUtils
@@ -98,13 +101,59 @@ object SuiteTvIntegration {
         return "$SUITE_TV_SEARCH_BASE_URL?q=$encoded"
     }
 
+    /**
+     * Opens the anime directly inside the native Suite TV Android app when installed:
+     * 1) Tries a package-scoped App Link (`setPackage(SUITE_TV_PACKAGE)`) if Suite TV declares an
+     *    intent-filter for `/it/search`.
+     * 2) Otherwise copies the cleaned series title to the clipboard, shows a quick Toast hint,
+     *    and launches the native Suite TV app directly (never unexpectedly kicking to Chrome).
+     * 3) Falls back to Suite TV Web only if the Suite TV app is not installed.
+     */
     fun openAnimeInSuiteTv(context: Context, anime: AnimeItem): Boolean {
+        val cleanTitle = cleanTitleForSuiteTv(anime.title).ifBlank { anime.title.trim() }
         val url = buildSearchUrl(anime.title)
-        val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        val pm = context.packageManager
+
+        if (isSuiteTvInstalled(context)) {
+            val appScopedView = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                setPackage(SUITE_TV_PACKAGE)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (appScopedView.resolveActivity(pm) != null) {
+                if (runCatching { context.startActivity(appScopedView) }.isSuccess) {
+                    return true
+                }
+            }
+
+            // Suite TV Android does not claim /search via VIEW intent: copy title + launch native app directly
+            if (cleanTitle.isNotBlank()) {
+                runCatching {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    clipboard?.setPrimaryClip(ClipData.newPlainText("Suite TV", cleanTitle))
+                }
+                runCatching {
+                    Toast.makeText(
+                        context.applicationContext,
+                        "Titolo copiato: $cleanTitle — incollalo in Suite TV",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+
+            val launchIntent = pm.getLaunchIntentForPackage(SUITE_TV_PACKAGE)
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (runCatching { context.startActivity(launchIntent) }.isSuccess) {
+                    return true
+                }
+            }
+        }
+
+        val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         return runCatching {
-            context.startActivity(viewIntent)
+            context.startActivity(webIntent)
             true
         }.getOrDefault(false)
     }

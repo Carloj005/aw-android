@@ -21,19 +21,25 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -45,12 +51,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.CalendarEntry
+import com.carloj005.awanime.data.model.DiscoveredSequel
+import com.carloj005.awanime.data.model.TrackedNotificationPrefs
+import com.carloj005.awanime.data.notifications.SequelTracker
+import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
 import com.carloj005.awanime.ui.CalendarFilter
 import com.carloj005.awanime.ui.CalendarUiState
 import com.carloj005.awanime.ui.components.BadgePill
@@ -65,10 +76,16 @@ import com.carloj005.awanime.ui.theme.BadgeSubBlue
 fun CalendarScreen(
     state: CalendarUiState,
     favoriteKeys: Set<String>,
+    watchingKeys: Set<String>,
+    userFranchiseKeys: Set<String>,
+    notifPrefs: TrackedNotificationPrefs,
+    discoveredSequels: List<DiscoveredSequel>,
     onEnsureLoaded: () -> Unit,
     onRefresh: () -> Unit,
     onSelectDay: (Int) -> Unit,
     onSelectFilter: (CalendarFilter) -> Unit,
+    onToggleNotification: (AnimeItem) -> Unit,
+    onDismissSequel: (String) -> Unit,
     onAnimeClick: (AnimeItem) -> Unit,
     onQuickWatch: (AnimeItem) -> Unit,
     modifier: Modifier = Modifier,
@@ -79,17 +96,39 @@ fun CalendarScreen(
         onEnsureLoaded()
     }
 
+    fun isEntryNotifEnabled(entry: CalendarEntry): Boolean =
+        TrackedNotificationsRepository.isEnabledForAnime(
+            prefs = notifPrefs,
+            uniqueKey = entry.anime.uniqueKey,
+            favoriteKeys = favoriteKeys,
+            watchingKeys = watchingKeys,
+        )
+
+    fun isEntryFranchiseSequel(entry: CalendarEntry): Boolean {
+        val key = entry.anime.uniqueKey
+        if (key in notifPrefs.explicitlyMutedKeys) return false
+        if (key in notifPrefs.discoveredSequelKeys) return true
+        return key !in favoriteKeys &&
+            key !in watchingKeys &&
+            SequelTracker.matchesUserFranchise(entry.anime, userFranchiseKeys)
+    }
+
+    fun matchesActiveFilter(entry: CalendarEntry): Boolean = when (state.filter) {
+        CalendarFilter.MY_ANIME -> isEntryNotifEnabled(entry) || isEntryFranchiseSequel(entry)
+        CalendarFilter.ALL -> true
+        CalendarFilter.SUB -> !entry.isDub
+        CalendarFilter.DUB -> entry.isDub
+    }
+
     val safeDayIdx = state.selectedDayIndex.coerceIn(0, (state.days.size - 1).coerceAtLeast(0))
     val activeDay = state.days.getOrNull(safeDayIdx)
-    val filteredEntries = remember(activeDay, state.filter, favoriteKeys) {
-        val raw = activeDay?.entries.orEmpty()
-        when (state.filter) {
-            CalendarFilter.ALL -> raw
-            CalendarFilter.SUB -> raw.filter { !it.isDub }
-            CalendarFilter.DUB -> raw.filter { it.isDub }
-            CalendarFilter.FAVORITES -> raw.filter { it.anime.uniqueKey in favoriteKeys }
-        }
+    val dayCounts = remember(state.days, state.filter, favoriteKeys, watchingKeys, userFranchiseKeys, notifPrefs) {
+        state.days.map { day -> day.entries.count { matchesActiveFilter(it) } }
     }
+    val filteredEntries = remember(activeDay, state.filter, favoriteKeys, watchingKeys, userFranchiseKeys, notifPrefs) {
+        activeDay?.entries.orEmpty().filter { matchesActiveFilter(it) }
+    }
+    val totalMyAnimeThisWeek = remember(dayCounts) { dayCounts.sum() }
 
     Column(
         modifier = modifier
@@ -136,6 +175,59 @@ fun CalendarScreen(
             }
         }
 
+        if (discoveredSequels.isNotEmpty()) {
+            val topSequel = discoveredSequels.first()
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = cs.tertiaryContainer),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .clickable { onAnimeClick(topSequel.newSeason) },
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = cs.onTertiaryContainer,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Nuova stagione salvata automaticamente!",
+                            color = cs.onTertiaryContainer,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                        )
+                        Text(
+                            text = "${topSequel.newSeason.title} (sequel di ${topSequel.parentAnime.title})",
+                            color = cs.onTertiaryContainer.copy(alpha = 0.9f),
+                            fontSize = 12.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(
+                        onClick = { onDismissSequel(topSequel.newSeason.uniqueKey) },
+                        modifier = Modifier.size(30.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Chiudi avviso",
+                            tint = cs.onTertiaryContainer,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
+        }
+
         if (state.days.isNotEmpty()) {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp),
@@ -144,12 +236,13 @@ fun CalendarScreen(
             ) {
                 itemsIndexed(state.days) { idx, day ->
                     val selected = idx == safeDayIdx
+                    val count = dayCounts.getOrElse(idx) { day.entries.size }
                     FilterChip(
                         selected = selected,
                         onClick = { onSelectDay(idx) },
                         label = {
                             Text(
-                                text = "${day.shortLabel} (${day.entries.size})",
+                                text = "${day.shortLabel} ($count)",
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                 fontSize = 12.sp,
                             )
@@ -159,7 +252,11 @@ fun CalendarScreen(
                             selectedContainerColor = cs.primaryContainer,
                             selectedLabelColor = cs.onPrimaryContainer,
                             containerColor = cs.surfaceContainer,
-                            labelColor = cs.onSurfaceVariant,
+                            labelColor = if (count == 0 && state.filter == CalendarFilter.MY_ANIME) {
+                                cs.onSurfaceVariant.copy(alpha = 0.55f)
+                            } else {
+                                cs.onSurfaceVariant
+                            },
                         ),
                         border = null,
                     )
@@ -220,16 +317,47 @@ fun CalendarScreen(
                             modifier = Modifier.size(56.dp),
                         )
                         Spacer(Modifier.height(10.dp))
-                        Text(
-                            text = if (state.filter == CalendarFilter.FAVORITES) {
-                                "Nessun anime dei tuoi Preferiti esce in questo giorno"
-                            } else {
+                        val titleMsg = when {
+                            state.filter == CalendarFilter.MY_ANIME && totalMyAnimeThisWeek > 0 ->
+                                "Nessun tuo anime esce in questo giorno"
+                            state.filter == CalendarFilter.MY_ANIME ->
+                                "Nessun anime seguito in onda questa settimana"
+                            else ->
                                 "Nessuna uscita prevista con questo filtro"
-                            },
+                        }
+                        val subMsg = when {
+                            state.filter == CalendarFilter.MY_ANIME && totalMyAnimeThisWeek > 0 ->
+                                "Hai $totalMyAnimeThisWeek uscite negli altri giorni della settimana, oppure sfoglia tutto il palinsesto."
+                            state.filter == CalendarFilter.MY_ANIME ->
+                                "Tocca la campanella 🔔 sugli anime che vuoi seguire nel palinsesto completo: appariranno qui e riceverai le notifiche solo per loro."
+                            else -> null
+                        }
+                        Text(
+                            text = titleMsg,
                             color = cs.onSurface,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
                         )
+                        if (subMsg != null) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = subMsg,
+                                color = cs.onSurfaceVariant,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                        if (state.filter == CalendarFilter.MY_ANIME) {
+                            Spacer(Modifier.height(14.dp))
+                            FilledTonalButton(
+                                onClick = { onSelectFilter(CalendarFilter.ALL) },
+                                shape = CircleShape,
+                            ) {
+                                Text("Mostra tutto il palinsesto", fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
                 }
             }
@@ -252,6 +380,9 @@ fun CalendarScreen(
                             CalendarEntryCard(
                                 entry = entry,
                                 isFavorite = entry.anime.uniqueKey in favoriteKeys,
+                                isNotificationEnabled = isEntryNotifEnabled(entry),
+                                isNewSeasonMatch = isEntryFranchiseSequel(entry),
+                                onToggleNotification = { onToggleNotification(entry.anime) },
                                 onOpenDetail = { onAnimeClick(entry.anime) },
                                 onQuickWatch = { onQuickWatch(entry.anime) },
                             )
@@ -267,6 +398,9 @@ fun CalendarScreen(
 private fun CalendarEntryCard(
     entry: CalendarEntry,
     isFavorite: Boolean,
+    isNotificationEnabled: Boolean,
+    isNewSeasonMatch: Boolean,
+    onToggleNotification: () -> Unit,
     onOpenDetail: () -> Unit,
     onQuickWatch: () -> Unit,
 ) {
@@ -315,12 +449,12 @@ private fun CalendarEntryCard(
                         modifier = Modifier.weight(1f),
                     )
                     if (isFavorite) {
-                        Spacer(Modifier.width(6.dp))
+                        Spacer(Modifier.width(4.dp))
                         Icon(
                             imageVector = Icons.Rounded.Favorite,
                             contentDescription = "Nei preferiti",
                             tint = BadgeItaCoral,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(15.dp),
                         )
                     }
                 }
@@ -340,7 +474,13 @@ private fun CalendarEntryCard(
                             contentColor = if (entry.isAired) BadgeGreen else cs.onPrimaryContainer,
                         )
                     }
-                    if (entry.isLate) {
+                    if (isNewSeasonMatch) {
+                        BadgePill(
+                            text = "Nuova Stagione",
+                            backgroundColor = cs.tertiaryContainer,
+                            contentColor = cs.onTertiaryContainer,
+                        )
+                    } else if (entry.isLate) {
                         BadgePill(
                             text = "In ritardo",
                             backgroundColor = cs.errorContainer,
@@ -400,13 +540,40 @@ private fun CalendarEntryCard(
                     }
                 }
             }
-            if (entry.isAired) {
-                Spacer(Modifier.width(6.dp))
-                FilledTonalIconButton(onClick = onQuickWatch) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                IconButton(
+                    onClick = onToggleNotification,
+                    modifier = Modifier.size(38.dp),
+                ) {
                     Icon(
-                        imageVector = Icons.Rounded.PlayArrow,
-                        contentDescription = "Guarda episodio",
+                        imageVector = if (isNotificationEnabled) {
+                            Icons.Rounded.NotificationsActive
+                        } else {
+                            Icons.Rounded.NotificationsOff
+                        },
+                        contentDescription = if (isNotificationEnabled) {
+                            "Disattiva notifiche per questo anime"
+                        } else {
+                            "Segui e attiva notifiche per questo anime"
+                        },
+                        tint = if (isNotificationEnabled) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.55f),
+                        modifier = Modifier.size(20.dp),
                     )
+                }
+                if (entry.isAired) {
+                    FilledTonalIconButton(
+                        onClick = onQuickWatch,
+                        modifier = Modifier.size(38.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = "Guarda episodio",
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
             }
         }

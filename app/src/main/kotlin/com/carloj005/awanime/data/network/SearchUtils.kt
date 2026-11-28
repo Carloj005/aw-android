@@ -1,6 +1,7 @@
 package com.carloj005.awanime.data.network
 
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.SearchSortOrder
 import java.text.Normalizer
 import kotlin.math.max
 import kotlin.math.min
@@ -23,6 +24,38 @@ object SearchUtils {
         "primavera" to 2, "spring" to 2,
         "estate" to 3, "summer" to 3,
         "autunno" to 4, "autumn" to 4, "fall" to 4,
+    )
+
+    private val commonAliases = mapOf(
+        "aot" to "attack on titan",
+        "snk" to "shingeki no kyojin",
+        "jjk" to "jujutsu kaisen",
+        "csm" to "chainsaw man",
+        "mha" to "my hero academia",
+        "bnha" to "boku no hero academia",
+        "kny" to "kimetsu no yaiba",
+        "fma" to "fullmetal alchemist",
+        "fmab" to "fullmetal alchemist brotherhood",
+        "hxh" to "hunter x hunter",
+        "opm" to "one punch man",
+        "sao" to "sword art online",
+        "sbr" to "steel ball run",
+        "dbz" to "dragon ball z",
+        "dbs" to "dragon ball super",
+        "rezero" to "re zero",
+        "oshinoko" to "oshi no ko",
+        "danmachi" to "dungeon ni deai",
+        "tensura" to "tensei shitara slime",
+        "tokyoghoul" to "tokyo ghoul",
+        "deathnote" to "death note",
+        "blackclover" to "black clover",
+        "sololeveling" to "solo leveling",
+        "onepiece" to "one piece",
+        "demonslayer" to "demon slayer",
+        "vinlandsaga" to "vinland saga",
+        "drstone" to "dr stone",
+        "bluelock" to "blue lock",
+        "spyfamily" to "spy x family",
     )
 
     private val dubTagRegex = Regex("""\s*\((?:ITA|SUB\s*ITA|CR|DUB)\)\s*""", RegexOption.IGNORE_CASE)
@@ -77,6 +110,45 @@ object SearchUtils {
             return if (it >= 1) it else 1
         }
         return 1
+    }
+
+    /**
+     * Expands popular anime acronyms and compact spellings (e.g. "aot" -> "attack on titan",
+     * "jjk" -> "jujutsu kaisen", "sololeveling" -> "solo leveling") before remote queries.
+     */
+    fun expandQueryAlias(rawQuery: String): String {
+        val norm = normalizeSearchText(rawQuery)
+        if (norm.isEmpty()) return rawQuery.trim()
+        commonAliases[norm]?.let { return it }
+        val compact = norm.replace(" ", "")
+        commonAliases[compact]?.let { return it }
+        return rawQuery.trim()
+    }
+
+    fun sortByUserOrder(
+        items: List<AnimeItem>,
+        query: String,
+        order: SearchSortOrder,
+    ): List<AnimeItem> {
+        return when (order) {
+            SearchSortOrder.CHRONOLOGICAL -> sortAnimeItems(items, query)
+            SearchSortOrder.SCORE -> items.sortedWith(
+                compareByDescending<AnimeItem> { it.score?.toDoubleOrNull() ?: -1.0 }
+                    .thenByDescending { it.views }
+                    .thenBy { if (it.isDub) 1 else 0 }
+            )
+            SearchSortOrder.RECENT -> items.sortedWith(
+                compareByDescending<AnimeItem> { it.year ?: 0 }
+                    .thenByDescending { seasonQuarter[it.season.lowercase().trim()] ?: 0 }
+                    .thenByDescending { it.score?.toDoubleOrNull() ?: -1.0 }
+                    .thenBy { if (it.isDub) 1 else 0 }
+            )
+            SearchSortOrder.POPULAR -> items.sortedWith(
+                compareByDescending<AnimeItem> { it.views }
+                    .thenByDescending { it.score?.toDoubleOrNull() ?: -1.0 }
+                    .thenBy { if (it.isDub) 1 else 0 }
+            )
+        }
     }
 
     fun generateFallbackQueries(query: String, maxQueries: Int = 6): List<String> {

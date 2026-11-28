@@ -1,6 +1,7 @@
 package com.carloj005.awanime.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,17 +22,24 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Casino
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -41,9 +49,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.DiscoveredSequel
 import com.carloj005.awanime.data.model.LatestFilter
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.ui.HomeUiState
@@ -59,9 +69,12 @@ fun HomeScreen(
     state: HomeUiState,
     history: List<WatchHistoryEntry>,
     favorites: List<AnimeItem>,
+    discoveredSequels: List<DiscoveredSequel>,
     hasUpdateAvailable: Boolean,
     onSelectFilter: (LatestFilter) -> Unit,
     onRefresh: () -> Unit,
+    onPickRandomAnime: () -> Unit,
+    onDismissSequel: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onAnimeClick: (AnimeItem) -> Unit,
     onQuickWatch: (AnimeItem) -> Unit,
@@ -115,6 +128,10 @@ fun HomeScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
+            FilledTonalIconButton(onClick = onPickRandomAnime) {
+                Icon(Icons.Rounded.Casino, contentDescription = "Scegli un anime casuale")
+            }
+            Spacer(Modifier.width(6.dp))
             FilledTonalIconButton(onClick = onRefresh) {
                 Icon(Icons.Rounded.Refresh, contentDescription = "Aggiorna")
             }
@@ -184,6 +201,62 @@ fun HomeScreen(
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
+                        // Banner nuova stagione rilevata automaticamente
+                        if (discoveredSequels.isNotEmpty()) {
+                            val topSequel = discoveredSequels.first()
+                            item(span = { GridItemSpan(2) }) {
+                                Card(
+                                    shape = RoundedCornerShape(18.dp),
+                                    colors = CardDefaults.cardColors(containerColor = cs.tertiaryContainer),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onAnimeClick(topSequel.newSeason) },
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = cs.onTertiaryContainer,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                        Spacer(Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Nuova stagione salvata nei Preferiti!",
+                                                color = cs.onTertiaryContainer,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.ExtraBold,
+                                            )
+                                            Text(
+                                                text = topSequel.newSeason.title,
+                                                color = cs.onTertiaryContainer.copy(alpha = 0.9f),
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { onDismissSequel(topSequel.newSeason.uniqueKey) },
+                                            modifier = Modifier.size(30.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Close,
+                                                contentDescription = "Chiudi",
+                                                tint = cs.onTertiaryContainer,
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Hero Carousel in evidenza nella tab "Tutti"
                         if (state.selectedFilter == LatestFilter.ALL && state.heroCarousel.isNotEmpty()) {
                             item(span = { GridItemSpan(2) }) {

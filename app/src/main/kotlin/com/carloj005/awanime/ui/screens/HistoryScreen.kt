@@ -22,6 +22,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Tv
@@ -54,8 +56,10 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.carloj005.awanime.data.integrations.SuiteTvIntegration
 import com.carloj005.awanime.data.model.AnimeItem
+import com.carloj005.awanime.data.model.TrackedNotificationPrefs
 import com.carloj005.awanime.data.model.WatchHistoryEntry
 import com.carloj005.awanime.data.model.formatTimeMs
+import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
 import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.theme.BadgeGreen
 import com.carloj005.awanime.ui.theme.BadgeItaCoral
@@ -66,8 +70,12 @@ import com.carloj005.awanime.ui.theme.StarAmber
 fun HistoryScreen(
     history: List<WatchHistoryEntry>,
     favorites: List<AnimeItem>,
+    favoriteKeys: Set<String>,
+    watchingKeys: Set<String>,
+    notifPrefs: TrackedNotificationPrefs,
     onResume: (WatchHistoryEntry) -> Unit,
     onOpenDetail: (AnimeItem) -> Unit,
+    onToggleNotification: (AnimeItem) -> Unit,
     onRemoveHistory: (String) -> Unit,
     onRemoveFavorite: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -133,10 +141,18 @@ fun HistoryScreen(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(history, key = { it.uniqueKey }) { entry ->
+                        val notifOn = TrackedNotificationsRepository.isEnabledForAnime(
+                            prefs = notifPrefs,
+                            uniqueKey = entry.uniqueKey,
+                            favoriteKeys = favoriteKeys,
+                            watchingKeys = watchingKeys,
+                        )
                         HistoryCard(
                             entry = entry,
+                            isNotificationEnabled = notifOn,
                             onResume = { onResume(entry) },
                             onOpenDetail = { onOpenDetail(entry.anime) },
+                            onToggleNotification = { onToggleNotification(entry.anime) },
                             onRemove = { onRemoveHistory(entry.uniqueKey) },
                         )
                     }
@@ -165,9 +181,17 @@ fun HistoryScreen(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(favorites, key = { "fav_${it.uniqueKey}" }) { anime ->
+                        val notifOn = TrackedNotificationsRepository.isEnabledForAnime(
+                            prefs = notifPrefs,
+                            uniqueKey = anime.uniqueKey,
+                            favoriteKeys = favoriteKeys,
+                            watchingKeys = watchingKeys,
+                        )
                         FavoriteCard(
                             anime = anime,
+                            isNotificationEnabled = notifOn,
                             onOpenDetail = { onOpenDetail(anime) },
+                            onToggleNotification = { onToggleNotification(anime) },
                             onRemove = { onRemoveFavorite(anime.uniqueKey) },
                         )
                     }
@@ -180,10 +204,13 @@ fun HistoryScreen(
 @Composable
 private fun FavoriteCard(
     anime: AnimeItem,
+    isNotificationEnabled: Boolean,
     onOpenDetail: () -> Unit,
+    onToggleNotification: () -> Unit,
     onRemove: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -239,6 +266,41 @@ private fun FavoriteCard(
                         }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilledTonalIconButton(
+                        onClick = onToggleNotification,
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (isNotificationEnabled) {
+                                Icons.Rounded.NotificationsActive
+                            } else {
+                                Icons.Rounded.NotificationsOff
+                            },
+                            contentDescription = if (isNotificationEnabled) {
+                                "Disattiva notifiche"
+                            } else {
+                                "Attiva notifiche"
+                            },
+                            tint = if (isNotificationEnabled) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
+                    FilledTonalIconButton(
+                        onClick = { SuiteTvIntegration.openAnimeInSuiteTv(context, anime) },
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Tv,
+                            contentDescription = "Apri su Suite TV",
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
+                }
             }
             IconButton(onClick = onRemove) {
                 Icon(
@@ -254,8 +316,10 @@ private fun FavoriteCard(
 @Composable
 private fun HistoryCard(
     entry: WatchHistoryEntry,
+    isNotificationEnabled: Boolean,
     onResume: () -> Unit,
     onOpenDetail: () -> Unit,
+    onToggleNotification: () -> Unit,
     onRemove: () -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -347,11 +411,30 @@ private fun HistoryCard(
                         Text(
                             text = when {
                                 !entry.completed -> "Riprendi"
-                                hasNextEpisode -> "Prossimo episodio"
+                                hasNextEpisode -> "Prossimo ep."
                                 else -> "Riguarda Ep. ${entry.currentEpisodeNum}"
                             },
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    FilledTonalIconButton(
+                        onClick = onToggleNotification,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (isNotificationEnabled) {
+                                Icons.Rounded.NotificationsActive
+                            } else {
+                                Icons.Rounded.NotificationsOff
+                            },
+                            contentDescription = if (isNotificationEnabled) {
+                                "Disattiva notifiche"
+                            } else {
+                                "Attiva notifiche"
+                            },
+                            tint = if (isNotificationEnabled) cs.primary else cs.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.size(18.dp),
                         )
                     }
                     FilledTonalIconButton(

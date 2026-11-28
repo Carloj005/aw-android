@@ -7,7 +7,7 @@ Project instructions and engineering invariants for Antigravity / AI coding agen
 - **Stack**: Kotlin 2.3, Jetpack Compose, Material You 3 Expressive, Media3 ExoPlayer (HLS/MP4), OkHttp 4, Coil 2, WorkManager 2.10, `kotlinx.serialization`, `kotlinx.coroutines`.
 - **SDK & Build**: `minSdk = 26`, `compileSdk = 36`, `targetSdk = 36`, `buildToolsVersion = "36.1.0"`, **JDK 21** (`jvmToolchain(21)`), AGP `9.0.1` (R8 Full Mode enabled for release).
 - **Website (GitHub Pages)**: Served from `main:/docs` at `https://carloj005.github.io/aw-android/` (`docs/index.html`, `docs/styles.css`, `docs/app.js`, `docs/favicon.svg`, `docs/.nojekyll`).
-- **Latest baseline**: `v1.3.2` (`versionCode = 9`).
+- **Latest baseline**: `v1.4.0` (`versionCode = 10`).
 
 ## 2. Architecture Map
 All source files live under `app/src/main/kotlin/com/carloj005/awanime/`:
@@ -25,12 +25,13 @@ All source files live under `app/src/main/kotlin/com/carloj005/awanime/`:
   - `SearchUtils.kt`: Chronological franchise sorting, fuzzy typo fallback, episode natural sort key.
 - `data/storage/`:
   - `JsonFileStore.kt`: Thread-safe async JSON persistence on `Dispatchers.IO`, conflated writes, atomic `.tmp` rename, `.corrupt.bak` recovery.
-  - `SettingsRepository.kt`, `FavoritesRepository.kt`, `HistoryRepository.kt` (lossless per-episode `mergeImport` + `syncKnownEpisodeAvailability`).
+  - `SettingsRepository.kt`, `FavoritesRepository.kt`, `HistoryRepository.kt` (lossless per-episode `mergeImport` + `syncKnownEpisodeAvailability`), `TrackedNotificationsRepository.kt` (per-anime bell opt-in/mute + discovered sequel tracking).
   - `DownloadRepository.kt` + `DownloadWorker.kt`: Foreground `WorkManager` downloads with HTTP `Range` resume, canonical path-traversal checks, and immediate `call.cancel()`.
-- `data/notifications/`: `FavoriteEpisodeNotificationManager.kt` + `FavoriteEpisodesCheckWorker.kt` (periodic background checks, silent first-run baseline, Android 13+ `POST_NOTIFICATIONS`, deep-link tap to `DetailScreen`).
+- `data/notifications/`: `FavoriteEpisodeNotificationManager.kt` + `FavoriteEpisodesCheckWorker.kt` + `SequelTracker.kt` (per-anime bell filtering, silent first-run baseline, automatic next-season & future-sequel detection/auto-save, Android 13+ `POST_NOTIFICATIONS`, deep-link tap to `DetailScreen`).
 - `data/integrations/`:
   - `AnimeUnityDeepLink.kt`: Security-validated parser for `animeunity.*` links (`/anime/<id>-<slug>`, `/anime/<id>-<slug>/<videoId>`, `/calendario`, `/archivio`, `/top-anime`) + `ACTION_APP_OPEN_BY_DEFAULT_SETTINGS` helper.
-  - `SuiteTvIntegration.kt`: Android App Links (`com.nicolasbordeaux.suitetv` / `suitetv.app/it/search?q=...`) + Trakt v2 watched-history JSON export for Suite TV import.
+  - `SuiteTvIntegration.kt`: Native Suite TV app launch (`com.nicolasbordeaux.suitetv`, copying cleaned title to clipboard + Toast when `/search` App Link isn't claimed, web fallback if uninstalled) + Trakt v2 watched-history JSON export.
+  - `BugReportHelper.kt`: Pre-filled GitHub Issue URL builder and clipboard diagnostic report generator (zero PII).
 - `data/update/AppUpdater.kt`: Fail-closed GitHub Releases updater enforcing HTTPS, exact 4 GitHub hosts, mandatory `.apk.sha256` match, and mandatory APK signing certificate match against installed app.
 - `ui/`: `AppViewModel.kt`, `PlayerViewModel.kt`, `screens/` (`HomeScreen`, `CalendarScreen`, `SearchScreen`, `DetailScreen`, `HistoryScreen`, `DownloadsScreen`, `SettingsScreen`, `PlayerScreen`, `PlayerOverlays`), `components/AnimeCards.kt`, `theme/`.
 - `util/CoroutineUtils.kt`: `runCatchingCancellable` (always rethrows `CancellationException`).

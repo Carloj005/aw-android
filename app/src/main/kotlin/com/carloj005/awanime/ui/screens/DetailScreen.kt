@@ -2,6 +2,7 @@ package com.carloj005.awanime.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,17 +22,22 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
@@ -93,11 +99,14 @@ fun DetailScreen(
     state: DetailUiState,
     historyEntry: WatchHistoryEntry?,
     isFavorite: Boolean,
+    isNotificationEnabled: Boolean,
     downloads: List<DownloadEntry>,
     shareBaseUrl: String,
     onBack: () -> Unit,
     onRetry: (AnimeItem) -> Unit,
     onToggleFavorite: (AnimeItem) -> Unit,
+    onToggleNotification: (AnimeItem) -> Unit,
+    onOpenRelatedAnime: (AnimeItem) -> Unit,
     onSwitchLanguage: (Boolean) -> Unit,
     onPlayEpisode: (AnimeItem, List<EpisodeItem>, Int) -> Unit,
     onDownloadEpisode: (AnimeItem, EpisodeItem) -> Unit,
@@ -210,6 +219,27 @@ fun DetailScreen(
                                     imageVector = Icons.Rounded.Share,
                                     contentDescription = "Condividi",
                                     tint = Color.White,
+                                )
+                            }
+
+                            IconButton(
+                                onClick = { onToggleNotification(anime) },
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(if (isNotificationEnabled) cs.primary else Color(0x99000000)),
+                            ) {
+                                Icon(
+                                    imageVector = if (isNotificationEnabled) {
+                                        Icons.Rounded.NotificationsActive
+                                    } else {
+                                        Icons.Rounded.NotificationsOff
+                                    },
+                                    contentDescription = if (isNotificationEnabled) {
+                                        "Disattiva notifiche episodi"
+                                    } else {
+                                        "Attiva notifiche episodi"
+                                    },
+                                    tint = if (isNotificationEnabled) cs.onPrimary else Color.White,
                                 )
                             }
 
@@ -357,6 +387,88 @@ fun DetailScreen(
                 }
             }
 
+            // Card Prossima Stagione (se presente in relatedAnimes!)
+            state.nextSeason?.let { next ->
+                item {
+                    val finishedCurrent = historyEntry?.isCaughtUp == true
+                    val containerColor = if (finishedCurrent) cs.primaryContainer else cs.secondaryContainer
+                    val contentColor = if (finishedCurrent) cs.onPrimaryContainer else cs.onSecondaryContainer
+                    Card(
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = containerColor),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .clickable { onOpenRelatedAnime(next) },
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AsyncImage(
+                                model = next.displayImageUrl,
+                                contentDescription = next.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .width(54.dp)
+                                    .height(76.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(cs.surfaceContainerHigh),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = contentColor,
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        text = if (finishedCurrent) {
+                                            "Stagione completata! Prosegui con:"
+                                        } else {
+                                            "Prossima stagione disponibile"
+                                        },
+                                        color = contentColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                    )
+                                }
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    text = next.title,
+                                    color = contentColor,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                val nextMeta = buildList {
+                                    next.year?.let { add(it.toString()) }
+                                    add(next.status)
+                                    if (next.releasedEpisodes > 0) add("${next.releasedEpisodes} ep")
+                                }.joinToString(" • ")
+                                Text(
+                                    text = nextMeta,
+                                    color = contentColor.copy(alpha = 0.85f),
+                                    fontSize = 11.sp,
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                                contentDescription = "Apri prossima stagione",
+                                tint = contentColor,
+                            )
+                        }
+                    }
+                }
+            }
+
             // Generi, Trama & Link Esterni (Suite TV / AniList / MyAnimeList)
             item {
                 val hasSuiteTvApp = remember(context) { SuiteTvIntegration.isSuiteTvInstalled(context) }
@@ -480,6 +592,88 @@ fun DetailScreen(
                                     colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainerHigh),
                                     border = null,
                                 )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Carosello "Stagioni & Correlati"
+            if (state.relatedAnimes.size > 1) {
+                item {
+                    Column(modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)) {
+                        Text(
+                            text = "Stagioni & Correlati",
+                            color = cs.onBackground,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        )
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            items(state.relatedAnimes, key = { "rel_${it.uniqueKey}" }) { rel ->
+                                val isCurrent = rel.id == anime.id
+                                Card(
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isCurrent) cs.primaryContainer else cs.surfaceContainer,
+                                    ),
+                                    border = if (isCurrent) BorderStroke(1.5.dp, cs.primary) else null,
+                                    modifier = Modifier
+                                        .width(126.dp)
+                                        .clickable(enabled = !isCurrent) { onOpenRelatedAnime(rel) },
+                                ) {
+                                    Column {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(145.dp),
+                                        ) {
+                                            AsyncImage(
+                                                model = rel.displayImageUrl,
+                                                contentDescription = rel.title,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                            if (isCurrent) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopStart)
+                                                        .padding(6.dp),
+                                                ) {
+                                                    BadgePill(
+                                                        text = "Attuale",
+                                                        backgroundColor = cs.primary,
+                                                        contentColor = cs.onPrimary,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Column(modifier = Modifier.padding(8.dp)) {
+                                            Text(
+                                                text = rel.title,
+                                                color = if (isCurrent) cs.onPrimaryContainer else cs.onSurface,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                lineHeight = 15.sp,
+                                            )
+                                            Spacer(Modifier.height(2.dp))
+                                            Text(
+                                                text = listOfNotNull(rel.year?.toString(), rel.type).joinToString(" • "),
+                                                color = if (isCurrent) {
+                                                    cs.onPrimaryContainer.copy(alpha = 0.8f)
+                                                } else {
+                                                    cs.onSurfaceVariant
+                                                },
+                                                fontSize = 10.sp,
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

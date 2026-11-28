@@ -24,6 +24,8 @@ class HistoryRepository(
 
     val history: StateFlow<List<WatchHistoryEntry>> = store.state
 
+    suspend fun awaitLoaded(): List<WatchHistoryEntry> = store.awaitLoaded()
+
     fun getEntry(uniqueKey: String): WatchHistoryEntry? {
         return store.value.firstOrNull { it.uniqueKey == uniqueKey }
     }

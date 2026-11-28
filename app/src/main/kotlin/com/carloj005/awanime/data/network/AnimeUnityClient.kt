@@ -1,11 +1,14 @@
 package com.carloj005.awanime.data.network
 
 import android.content.Context
+import com.carloj005.awanime.data.model.AnimeDetailWithRelated
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.CalendarDayGroup
 import com.carloj005.awanime.data.model.DirectDownloadSource
 import com.carloj005.awanime.data.model.EpisodeItem
+import com.carloj005.awanime.data.model.GenreItem
 import com.carloj005.awanime.data.model.LatestFilter
+import com.carloj005.awanime.data.model.SearchTypeFilter
 import com.carloj005.awanime.data.model.SkipSegment
 import com.carloj005.awanime.data.model.StreamResolution
 import com.carloj005.awanime.util.runCatchingCancellable
@@ -98,6 +101,9 @@ class AnimeUnityClient(
 
     @Volatile
     private var cachedHeroCarousel: List<AnimeItem> = emptyList()
+
+    @Volatile
+    private var cachedGenres: List<GenreItem> = emptyList()
 
     private fun extractInertiaPage(html: String): JsonObject? {
         val match = INERTIA_PAGE_REGEX.find(html) ?: return null
@@ -319,17 +325,22 @@ class AnimeUnityClient(
     }
 
     suspend fun search(rawQuery: String): List<AnimeItem> = withContext(Dispatchers.IO) {
-        val query = rawQuery.trim()
-        if (query.isEmpty()) return@withContext emptyList()
+        val trimmed = rawQuery.trim()
+        if (trimmed.isEmpty()) return@withContext emptyList()
         ensureSession()
 
-        val primary = querySearchRecords(query)
+        val expanded = SearchUtils.expandQueryAlias(trimmed)
+        val primary = querySearchRecords(expanded)
         if (primary.isNotEmpty()) {
-            return@withContext SearchUtils.sortAnimeItems(primary, query)
+            return@withContext SearchUtils.sortAnimeItems(primary, expanded)
         }
 
         val fallbackByKey = LinkedHashMap<String, AnimeItem>()
-        for (subQuery in SearchUtils.generateFallbackQueries(query)) {
+        val queriesToTry = buildList {
+            if (!expanded.equals(trimmed, ignoreCase = true)) add(trimmed)
+            addAll(SearchUtils.generateFallbackQueries(expanded))
+        }
+        for (subQuery in queriesToTry) {
             val subHits = runCatchingCancellable { querySearchRecords(subQuery) }.getOrDefault(emptyList())
             for (item in subHits) {
                 fallbackByKey.putIfAbsent(item.uniqueKey, item)
@@ -337,17 +348,128 @@ class AnimeUnityClient(
         }
         if (fallbackByKey.isEmpty()) return@withContext emptyList()
 
-        val chronologicallyOrdered = SearchUtils.sortAnimeItems(fallbackByKey.values.toList(), query)
-        SearchUtils.rankFuzzyCandidates(query, chronologicallyOrdered)
+        val chronologicallyOrdered = SearchUtils.sortAnimeItems(fallbackByKey.values.toList(), expanded)
+        SearchUtils.rankFuzzyCandidates(expanded, chronologicallyOrdered)
     }
 
-    suspend fun getAnimeDetails(animeId: String, isDub: Boolean): AnimeItem = withContext(Dispatchers.IO) {
-        val page = inertiaGet("/anime/$animeId-x", component = "Anime", partialData = listOf("anime"))
-        val animeObj = page["props"]?.jsonObject?.get("anime") as? JsonObject
-            ?: throw IOException("Dettagli anime non disponibili")
-        val lang = if (isDub) "ita" else AnimeUnityParser.pickPreferredSubLanguage(animeObj)
-        AnimeUnityParser.parseSingleAnime(animeObj, variantLang = lang, forceDub = isDub)
+    /**
+     * Fetches and caches the official AnimeUnity genre catalog from `/archive` Inertia props.
+     */
+    suspend fun getGenres(): List<GenreItem> = withContext(Dispatchers.IO) {
+        if (cachedGenres.isNotEmpty()) return@withContext cachedGenres
+        val page = inertiaGet("/archive", component = "Archive", partialData = listOf("animeGenres"))
+        val arr = page["props"]?.jsonObject?.get("animeGenres") as? JsonArray ?: return@withContext emptyList()
+        val parsed = arr.mapNotNull { el ->
+            val obj = el as? JsonObject ?: return@mapNotNull null
+            val id = obj.intVal("id") ?: return@mapNotNull null
+            val name = obj.str("name")?.trim()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            if (name.equals("Hentai", ignoreCase = true)) return@mapNotNull null
+            GenreItem(id = id, name = name)
+        }
+        if (parsed.isNotEmpty()) cachedGenres = parsed
+        parsed
     }
+
+    /**
+     * Server-side filtered archive discovery (works even with an empty query: genre, type, language,
+     * status, year, and score sorting).
+     */
+    suspend fun browseArchive(
+        query: String = "",
+        genreId: Int? = null,
+        typeFilter: SearchTypeFilter = SearchTypeFilter.ALL,
+        language: String? = null,
+        status: String? = null,
+        sortByScore: Boolean = false,
+    ): List<AnimeItem> = withContext(Dispatchers.IO) {
+        ensureSession()
+        val params = buildList {
+            val q = SearchUtils.expandQueryAlias(query).trim()
+            if (q.isNotEmpty()) add("query=${URLEncoder.encode(q, StandardCharsets.UTF_8.name())}")
+            if (genreId != null) add("genres[]=$genreId")
+            typeFilter.apiValue?.let { add("type=$it") }
+            language?.let { add("language=$it") }
+            status?.let { add("status=$it") }
+            if (sortByScore) add("sort_by=score")
+        }
+        val queryString = if (params.isNotEmpty()) params.joinToString("&") + "&" else ""
+        val mergedById = LinkedHashMap<String, JsonObject>()
+        for (page in 1..2) {
+            val payload = apiGetJson("/api/archive?${queryString}page=$page").jsonObject
+            val arr = payload["data"]?.jsonArray ?: break
+            for (el in arr) {
+                val obj = el as? JsonObject ?: continue
+                val id = obj.str("id") ?: continue
+                mergedById.putIfAbsent(id, obj)
+            }
+            val lastPage = payload.intVal("last_page") ?: 1
+            if (page >= lastPage) break
+        }
+        mergedById.values.flatMap { AnimeUnityParser.parseAnimeVariants(it) }
+    }
+
+    /**
+     * Picks a genuine random anime from AnimeUnity's `/random` endpoint (skipping already-completed
+     * anime where possible, with automatic fallback to Top Anime).
+     */
+    suspend fun getRandomAnime(
+        excludeUniqueKeys: Set<String> = emptySet(),
+    ): AnimeItem = withContext(Dispatchers.IO) {
+        ensureSession()
+        var fallbackCandidate: AnimeItem? = null
+        repeat(3) {
+            val picked = runCatchingCancellable {
+                val page = inertiaGet("/random", component = "Anime", partialData = listOf("anime"))
+                val animeObj = page["props"]?.jsonObject?.get("anime") as? JsonObject ?: return@runCatchingCancellable null
+                val lang = AnimeUnityParser.pickPreferredSubLanguage(animeObj)
+                AnimeUnityParser.parseSingleAnime(animeObj, variantLang = lang, forceDub = false)
+            }.getOrNull()
+            if (picked != null && picked.id.isNotBlank()) {
+                fallbackCandidate = picked
+                if (picked.uniqueKey !in excludeUniqueKeys) {
+                    return@withContext picked
+                }
+            }
+        }
+        fallbackCandidate?.let { return@withContext it }
+
+        val trending = fetchTrendingAnimes()
+        val eligible = trending.filter { it.uniqueKey !in excludeUniqueKeys }.ifEmpty { trending }
+        eligible.randomOrNull() ?: throw IOException("Impossibile pescare un anime casuale in questo momento")
+    }
+
+    suspend fun getAnimeDetails(animeId: String, isDub: Boolean): AnimeItem =
+        getAnimeDetailsWithRelated(animeId, isDub).anime
+
+    suspend fun getAnimeDetailsWithRelated(animeId: String, isDub: Boolean): AnimeDetailWithRelated =
+        withContext(Dispatchers.IO) {
+            val page = inertiaGet(
+                path = "/anime/$animeId-x",
+                component = "Anime",
+                partialData = listOf("anime", "relatedAnimes"),
+            )
+            val props = page["props"]?.jsonObject
+            val animeObj = props?.get("anime") as? JsonObject
+                ?: throw IOException("Dettagli anime non disponibili")
+            val lang = if (isDub) "ita" else AnimeUnityParser.pickPreferredSubLanguage(animeObj)
+            val anime = AnimeUnityParser.parseSingleAnime(animeObj, variantLang = lang, forceDub = isDub)
+
+            val relatedArr = props["relatedAnimes"] as? JsonArray
+            val related = relatedArr?.mapNotNull { el ->
+                val obj = el as? JsonObject ?: return@mapNotNull null
+                val relLang = if (isDub) "ita" else AnimeUnityParser.pickPreferredSubLanguage(obj)
+                val variants = (obj["variants"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+                val hasRequestedDub = variants.any { it.str("language")?.equals("ita", ignoreCase = true) == true }
+                val useDub = isDub && hasRequestedDub
+                AnimeUnityParser.parseSingleAnime(
+                    obj = obj,
+                    variantLang = if (useDub) "ita" else relLang,
+                    forceDub = useDub,
+                )
+            }.orEmpty()
+
+            AnimeDetailWithRelated(anime = anime, relatedAnimes = related)
+        }
 
     suspend fun getEpisodes(animeId: String, isDub: Boolean): List<EpisodeItem> = withContext(Dispatchers.IO) {
         ensureSession()

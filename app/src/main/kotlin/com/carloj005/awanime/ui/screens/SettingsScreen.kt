@@ -15,14 +15,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.FileUpload
@@ -33,6 +37,7 @@ import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -41,19 +46,29 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.carloj005.awanime.BuildConfig
+import com.carloj005.awanime.data.integrations.BugReportHelper
+import com.carloj005.awanime.data.integrations.ReportKind
 import com.carloj005.awanime.data.model.AppSettings
 import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.formatBytes
@@ -80,6 +95,7 @@ sealed interface SettingsEvent {
     data object ExportBackup : SettingsEvent
     data object ImportBackup : SettingsEvent
     data object ClearCache : SettingsEvent
+    data class ShowFeedback(val message: String) : SettingsEvent
 }
 
 @Composable
@@ -87,6 +103,7 @@ fun SettingsScreen(
     settings: AppSettings,
     updateState: UpdateUiState,
     cacheBytes: Long,
+    activeDomain: String,
     feedbackMessage: String?,
     isCheckingFavorites: Boolean,
     isSuiteTvInstalled: Boolean,
@@ -94,6 +111,34 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    var showBugReportDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showBugReportDialog) {
+        BugReportDialog(
+            activeDomain = activeDomain,
+            onDismiss = { showBugReportDialog = false },
+            onCopyReport = { kind, title, desc ->
+                val copied = BugReportHelper.copyReportToClipboard(context, kind, title, desc, activeDomain)
+                onEvent(
+                    SettingsEvent.ShowFeedback(
+                        if (copied) "Report diagnostico copiato negli appunti!"
+                        else "Impossibile copiare il report."
+                    )
+                )
+            },
+            onSubmitGitHub = { kind, title, desc ->
+                val opened = BugReportHelper.openGitHubIssueForm(context, kind, title, desc, activeDomain)
+                showBugReportDialog = false
+                onEvent(
+                    SettingsEvent.ShowFeedback(
+                        if (opened) "Modulo segnalazione aperto su GitHub!"
+                        else "Impossibile aprire il browser: usa 'Copia' per salvare il report."
+                    )
+                )
+            },
+        )
+    }
 
     Column(
         modifier = modifier
@@ -187,6 +232,10 @@ fun SettingsScreen(
             }
 
             item {
+                FeedbackAndBugReportSection(onOpenBugDialog = { showBugReportDialog = true })
+            }
+
+            item {
                 SecurityInfoSection()
             }
 
@@ -270,10 +319,10 @@ private fun FavoriteNotificationsSection(
 ) {
     val cs = MaterialTheme.colorScheme
     val intervals = listOf(1, 3, 6, 12)
-    SettingsSectionCard(title = "Notifiche Nuovi Episodi Preferiti", icon = Icons.Rounded.NotificationsActive) {
+    SettingsSectionCard(title = "Notifiche Episodi & Nuove Stagioni", icon = Icons.Rounded.NotificationsActive) {
         SettingsSwitchRow(
-            title = "Avvisami quando esce un nuovo episodio",
-            subtitle = "Controlla periodicamente in background gli anime salvati nei tuoi Preferiti",
+            title = "Avvisami su nuovi episodi e nuove stagioni",
+            subtitle = "Controlla solo gli anime con la campanella 🔔 attiva (Calendario / Scheda / Libreria) e salva in automatico eventuali nuove stagioni dei franchise già visti",
             checked = settings.notifyFavoriteEpisodes,
             onCheckedChange = { onEvent(SettingsEvent.ToggleFavoriteNotifications(it)) },
         )
@@ -310,7 +359,7 @@ private fun FavoriteNotificationsSection(
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
             }
-            Text("Controlla Preferiti ora", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("Controlla anime seguiti ora", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -325,7 +374,7 @@ private fun SuiteTvIntegrationSection(
     SettingsSectionCard(title = "Integrazione Suite TV", icon = Icons.Rounded.Tv) {
         Text(
             text = if (isSuiteTvInstalled) {
-                "App Suite TV rilevata sul dispositivo: i link aprono direttamente l'app nativa."
+                "App Suite TV rilevata sul dispositivo: il tasto TV apre direttamente l'app nativa (e copia il titolo negli appunti per cercarlo al volo)."
             } else {
                 "Traccia serie e anime su suitetv.app/it o esporta la tua cronologia per importarla in Suite TV."
             },
@@ -445,7 +494,7 @@ private fun BackupSection(onEvent: (SettingsEvent) -> Unit) {
     val cs = MaterialTheme.colorScheme
     SettingsSectionCard(title = "Backup & Ripristino (Locale)", icon = Icons.Rounded.CloudDone) {
         Text(
-            text = "Esporta o ripristina Cronologia, Preferiti e Impostazioni in un file JSON senza bisogno di account.",
+            text = "Esporta o ripristina Cronologia, Preferiti, Notifiche per anime e Impostazioni in un file JSON senza bisogno di account.",
             color = cs.onSurfaceVariant,
             fontSize = 12.sp,
             lineHeight = 17.sp,
@@ -540,6 +589,137 @@ private fun AutoUpdateSection(
             }
         }
     }
+}
+
+@Composable
+private fun FeedbackAndBugReportSection(onOpenBugDialog: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    SettingsSectionCard(title = "Segnalazione Bug & Feedback", icon = Icons.Rounded.BugReport) {
+        Text(
+            text = "Hai trovato un problema o vuoi proporre una nuova funzione? Invia una segnalazione precompilata su GitHub con la diagnostica di base del dispositivo (nessun dato personale).",
+            color = cs.onSurfaceVariant,
+            fontSize = 12.sp,
+            lineHeight = 17.sp,
+        )
+        Spacer(Modifier.height(12.dp))
+        FilledTonalButton(
+            onClick = onOpenBugDialog,
+            shape = CircleShape,
+        ) {
+            Icon(Icons.Rounded.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Segnala un bug o un'idea", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun BugReportDialog(
+    activeDomain: String,
+    onDismiss: () -> Unit,
+    onCopyReport: (ReportKind, String, String) -> Unit,
+    onSubmitGitHub: (ReportKind, String, String) -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    var selectedKind by remember { mutableStateOf(ReportKind.BUG) }
+    var title by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+    val canSubmit = title.trim().isNotEmpty() || description.trim().isNotEmpty()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Rounded.BugReport, contentDescription = null) },
+        title = {
+            Text(
+                text = "Segnala Bug o Proposta",
+                fontWeight = FontWeight.ExtraBold,
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    ReportKind.entries.forEachIndexed { idx, kind ->
+                        SegmentedButton(
+                            selected = selectedKind == kind,
+                            onClick = { selectedKind = kind },
+                            shape = SegmentedButtonDefaults.itemShape(idx, ReportKind.entries.size),
+                        ) {
+                            Text(kind.label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it.take(120) },
+                    label = { Text("Titolo breve") },
+                    placeholder = {
+                        Text(
+                            if (selectedKind == ReportKind.BUG) "Es. Errore apertura episodio..."
+                            else "Es. Aggiungi filtro per anno..."
+                        )
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it.take(1500) },
+                    label = { Text("Descrizione") },
+                    placeholder = { Text("Spiega cosa è successo o come riprodurlo...") },
+                    minLines = 3,
+                    maxLines = 5,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = "Allegati automatici: AW Anime v${BuildConfig.VERSION_NAME} • Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) • $activeDomain",
+                    color = cs.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val safeTitle = title.trim().ifBlank {
+                        if (selectedKind == ReportKind.BUG) "Segnalazione problema" else "Suggerimento"
+                    }
+                    onSubmitGitHub(selectedKind, safeTitle, description)
+                },
+                enabled = canSubmit,
+                shape = CircleShape,
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Invia su GitHub")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(
+                    onClick = {
+                        val safeTitle = title.trim().ifBlank {
+                            if (selectedKind == ReportKind.BUG) "Segnalazione problema" else "Suggerimento"
+                        }
+                        onCopyReport(selectedKind, safeTitle, description)
+                    },
+                    enabled = canSubmit,
+                ) {
+                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Copia")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Annulla")
+                }
+            }
+        },
+    )
 }
 
 @Composable

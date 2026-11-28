@@ -9,6 +9,7 @@ import com.carloj005.awanime.data.storage.DownloadRepository
 import com.carloj005.awanime.data.storage.FavoritesRepository
 import com.carloj005.awanime.data.storage.HistoryRepository
 import com.carloj005.awanime.data.storage.SettingsRepository
+import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
 import com.carloj005.awanime.data.update.AppUpdater
 import java.io.File
 
@@ -30,6 +31,7 @@ class AppContainer(context: Context) {
     val settingsRepository = SettingsRepository(appContext.filesDir)
     val historyRepository = HistoryRepository(appContext.filesDir)
     val favoritesRepository = FavoritesRepository(appContext.filesDir)
+    val trackedNotificationsRepository = TrackedNotificationsRepository(appContext.filesDir)
     val downloadRepository = DownloadRepository(
         context = appContext,
         client = animeUnityClient,
@@ -41,6 +43,8 @@ class AppContainer(context: Context) {
         context = appContext,
         client = animeUnityClient,
         favoritesRepo = favoritesRepository,
+        historyRepo = historyRepository,
+        trackedRepo = trackedNotificationsRepository,
         settingsRepo = settingsRepository,
         filesDir = appContext.filesDir,
     )

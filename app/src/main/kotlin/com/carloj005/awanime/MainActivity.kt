@@ -21,29 +21,41 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.CollectionsBookmark
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -59,9 +71,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,15 +84,21 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.carloj005.awanime.data.integrations.AnimeUnityDeepLink
 import com.carloj005.awanime.data.integrations.AnimeUnityDeepLinkParser
 import com.carloj005.awanime.data.integrations.SuiteTvIntegration
+import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.DownloadStatus
 import com.carloj005.awanime.data.model.LatestFilter
 import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.formatBytes
+import com.carloj005.awanime.data.network.SearchUtils
+import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
 import com.carloj005.awanime.ui.AppViewModel
+import com.carloj005.awanime.ui.RandomAnimeUiState
 import com.carloj005.awanime.ui.UpdateUiState
+import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.screens.CalendarScreen
 import com.carloj005.awanime.ui.screens.DetailScreen
 import com.carloj005.awanime.ui.screens.DownloadsScreen
@@ -89,6 +109,9 @@ import com.carloj005.awanime.ui.screens.PlayerScreen
 import com.carloj005.awanime.ui.screens.SearchScreen
 import com.carloj005.awanime.ui.screens.SettingsScreen
 import com.carloj005.awanime.ui.theme.AWAnimeTheme
+import com.carloj005.awanime.ui.theme.BadgeItaCoral
+import com.carloj005.awanime.ui.theme.BadgeSubBlue
+import com.carloj005.awanime.ui.theme.StarAmber
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -395,8 +418,11 @@ private fun AwAnimeRoot(
     val calendarState by vm.calendarState.collectAsStateWithLifecycle()
     val searchState by vm.searchState.collectAsStateWithLifecycle()
     val detailState by vm.detailState.collectAsStateWithLifecycle()
+    val randomAnimeState by vm.randomAnimeState.collectAsStateWithLifecycle()
+    val discoveredSequels by vm.discoveredSequels.collectAsStateWithLifecycle()
     val history by vm.history.collectAsStateWithLifecycle()
     val favorites by vm.favorites.collectAsStateWithLifecycle()
+    val notifPrefs by vm.trackedNotificationPrefs.collectAsStateWithLifecycle()
     val downloads by vm.downloads.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
     val activePlayer by vm.activePlayer.collectAsStateWithLifecycle()
@@ -406,6 +432,19 @@ private fun AwAnimeRoot(
     val cacheSizeBytes by vm.cacheSizeBytes.collectAsStateWithLifecycle()
 
     val favoriteKeys = remember(favorites) { favorites.map { it.uniqueKey }.toSet() }
+    val watchingKeys = remember(history) { history.map { it.uniqueKey }.toSet() }
+    val userFranchiseKeys = remember(favorites, history) {
+        buildSet {
+            favorites.forEach { fav ->
+                val fk = SearchUtils.extractFranchiseKey(fav.title)
+                if (fk.length >= 4) add(fk)
+            }
+            history.forEach { h ->
+                val fk = SearchUtils.extractFranchiseKey(h.anime.title)
+                if (fk.length >= 4) add(fk)
+            }
+        }
+    }
     val isSuiteTvInstalled = remember(context, showSettings) { SuiteTvIntegration.isSuiteTvInstalled(context) }
 
     val exportBackupLauncher = rememberLauncherForActivityResult(
@@ -450,6 +489,18 @@ private fun AwAnimeRoot(
         )
     }
 
+    if (randomAnimeState.showDialog && activePlayer == null) {
+        RandomAnimeDialog(
+            state = randomAnimeState,
+            onDismiss = { vm.dismissRandomAnimeDialog() },
+            onPickAnother = { vm.pickRandomAnime() },
+            onOpenDetail = { picked ->
+                vm.dismissRandomAnimeDialog()
+                vm.openAnimeDetail(picked)
+            },
+        )
+    }
+
     activePlayer?.let { request ->
         BackHandler { vm.closePlayer() }
         PlayerScreen(
@@ -471,6 +522,7 @@ private fun AwAnimeRoot(
             settings = settings,
             updateState = updateState,
             cacheBytes = cacheSizeBytes,
+            activeDomain = homeState.activeDomain,
             feedbackMessage = settingsFeedback,
             isCheckingFavorites = isCheckingFavorites,
             isSuiteTvInstalled = isSuiteTvInstalled,
@@ -504,15 +556,24 @@ private fun AwAnimeRoot(
         BackHandler { vm.closeDetail() }
         val histEntry = history.firstOrNull { it.uniqueKey == activeDetailAnime.uniqueKey }
         val isFav = activeDetailAnime.uniqueKey in favoriteKeys
+        val isNotifEnabled = TrackedNotificationsRepository.isEnabledForAnime(
+            prefs = notifPrefs,
+            uniqueKey = activeDetailAnime.uniqueKey,
+            favoriteKeys = favoriteKeys,
+            watchingKeys = watchingKeys,
+        )
         DetailScreen(
             state = detailState,
             historyEntry = histEntry,
             isFavorite = isFav,
+            isNotificationEnabled = isNotifEnabled,
             downloads = downloads,
             shareBaseUrl = vm.shareBaseUrl,
             onBack = { vm.closeDetail() },
             onRetry = { vm.openAnimeDetail(it) },
             onToggleFavorite = { vm.toggleFavorite(it) },
+            onToggleNotification = { vm.toggleAnimeNotification(it) },
+            onOpenRelatedAnime = { vm.openAnimeDetail(it) },
             onSwitchLanguage = { vm.switchDetailLanguage(it) },
             onPlayEpisode = { anime, eps, idx -> vm.startPlayback(anime, eps, idx) },
             onDownloadEpisode = { anime, ep -> vm.enqueueDownload(anime, ep) },
@@ -561,9 +622,12 @@ private fun AwAnimeRoot(
                     state = homeState,
                     history = history,
                     favorites = favorites,
+                    discoveredSequels = discoveredSequels,
                     hasUpdateAvailable = updateState.availableUpdate != null,
                     onSelectFilter = { vm.loadHome(it) },
                     onRefresh = { vm.loadHome(homeState.selectedFilter, forceRefresh = true) },
+                    onPickRandomAnime = { vm.pickRandomAnime() },
+                    onDismissSequel = { vm.dismissDiscoveredSequel(it) },
                     onOpenSettings = { showSettings = true },
                     onAnimeClick = { vm.openAnimeDetail(it) },
                     onQuickWatch = { vm.quickWatchAnime(it) },
@@ -574,28 +638,44 @@ private fun AwAnimeRoot(
                 BottomTab.CALENDAR -> CalendarScreen(
                     state = calendarState,
                     favoriteKeys = favoriteKeys,
+                    watchingKeys = watchingKeys,
+                    userFranchiseKeys = userFranchiseKeys,
+                    notifPrefs = notifPrefs,
+                    discoveredSequels = discoveredSequels,
                     onEnsureLoaded = { vm.ensureCalendarLoaded() },
                     onRefresh = { vm.loadCalendar(forceRefresh = true) },
                     onSelectDay = { vm.selectCalendarDay(it) },
                     onSelectFilter = { vm.setCalendarFilter(it) },
+                    onToggleNotification = { vm.toggleAnimeNotification(it) },
+                    onDismissSequel = { vm.dismissDiscoveredSequel(it) },
                     onAnimeClick = { vm.openAnimeDetail(it) },
                     onQuickWatch = { vm.quickWatchAnime(it) },
                 )
 
                 BottomTab.SEARCH -> SearchScreen(
                     state = searchState,
+                    onEnsureGenresLoaded = { vm.ensureGenresLoaded() },
                     onQueryChange = { vm.updateSearchQuery(it) },
                     onFilterChange = { vm.setSearchFilter(it) },
+                    onTypeFilterChange = { vm.setSearchTypeFilter(it) },
+                    onSortOrderChange = { vm.setSearchSortOrder(it) },
+                    onSelectGenre = { vm.selectSearchGenre(it) },
+                    onClearFilters = { vm.clearSearchFilters() },
                     onSearchSubmit = { vm.performSearch(it) },
                     onClearRecent = { vm.clearRecentQueries() },
+                    onPickRandomAnime = { vm.pickRandomAnime() },
                     onAnimeClick = { vm.openAnimeDetail(it) },
                 )
 
                 BottomTab.LIBRARY -> HistoryScreen(
                     history = history,
                     favorites = favorites,
+                    favoriteKeys = favoriteKeys,
+                    watchingKeys = watchingKeys,
+                    notifPrefs = notifPrefs,
                     onResume = { vm.resumeFromHistory(it) },
                     onOpenDetail = { vm.openAnimeDetail(it) },
+                    onToggleNotification = { vm.toggleAnimeNotification(it) },
                     onRemoveHistory = { vm.removeHistory(it) },
                     onRemoveFavorite = { vm.removeFavorite(it) },
                 )
@@ -610,6 +690,181 @@ private fun AwAnimeRoot(
             }
         }
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RandomAnimeDialog(
+    state: RandomAnimeUiState,
+    onDismiss: () -> Unit,
+    onPickAnother: () -> Unit,
+    onOpenDetail: (AnimeItem) -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Rounded.Casino, contentDescription = null) },
+        title = {
+            Text(
+                text = "Anime Random",
+                fontWeight = FontWeight.ExtraBold,
+            )
+        },
+        text = {
+            when {
+                state.isLoading -> {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 20.dp),
+                    ) {
+                        CircularProgressIndicator(color = cs.primary)
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "Scelgo un anime per te...",
+                            color = cs.onSurfaceVariant,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+
+                state.error != null -> {
+                    Text(
+                        text = state.error,
+                        color = cs.error,
+                        fontSize = 13.sp,
+                    )
+                }
+
+                state.anime != null -> {
+                    val anime = state.anime
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.Top) {
+                            AsyncImage(
+                                model = anime.displayImageUrl,
+                                contentDescription = anime.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .width(86.dp)
+                                    .height(124.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(cs.surfaceContainerHigh),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = anime.title,
+                                    color = cs.onSurface,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    BadgePill(
+                                        text = if (anime.isDub) "ITA" else "SUB",
+                                        backgroundColor = if (anime.isDub) BadgeItaCoral else BadgeSubBlue,
+                                    )
+                                    BadgePill(
+                                        text = anime.type,
+                                        backgroundColor = cs.surfaceContainerHigh,
+                                        contentColor = cs.onSurface,
+                                    )
+                                    anime.score?.let { sc ->
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(CircleShape)
+                                                .background(cs.surfaceContainerHigh)
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.Star,
+                                                contentDescription = null,
+                                                tint = StarAmber,
+                                                modifier = Modifier.size(12.dp),
+                                            )
+                                            Spacer(Modifier.width(2.dp))
+                                            Text(sc, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                val infoLine = buildList {
+                                    anime.year?.let { add(it.toString()) }
+                                    if (anime.releasedEpisodes > 0) add("${anime.releasedEpisodes} ep")
+                                    add(anime.status)
+                                }.joinToString(" • ")
+                                Text(
+                                    text = infoLine,
+                                    color = cs.onSurfaceVariant,
+                                    fontSize = 11.sp,
+                                )
+                            }
+                        }
+                        if (anime.genres.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                anime.genres.take(5).forEach { g ->
+                                    BadgePill(
+                                        text = g,
+                                        backgroundColor = cs.surfaceContainerHigh,
+                                        contentColor = cs.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                        if (anime.plot.isNotBlank()) {
+                            Text(
+                                text = anime.plot,
+                                color = cs.onSurfaceVariant,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                maxLines = 5,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val picked = state.anime
+            if (picked != null && !state.isLoading) {
+                Button(
+                    onClick = { onOpenDetail(picked) },
+                    shape = CircleShape,
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Apri scheda")
+                }
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(
+                    onClick = onPickAnother,
+                    enabled = !state.isLoading,
+                ) {
+                    Text(if (state.error != null) "Riprova" else "Un altro")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Chiudi")
+                }
+            }
+        },
+    )
 }
 
 @Composable

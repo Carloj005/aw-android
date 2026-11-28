@@ -23,6 +23,46 @@ enum class SearchFilter(val label: String) {
     COMPLETED("Finiti"),
 }
 
+@Serializable
+enum class SearchSortOrder(val label: String) {
+    CHRONOLOGICAL("Cronologico"),
+    SCORE("Voto ★"),
+    RECENT("Più recenti"),
+    POPULAR("Popolari"),
+}
+
+@Serializable
+enum class SearchTypeFilter(val label: String, val apiValue: String?) {
+    ALL("Tutti", null),
+    TV("TV", "tv"),
+    MOVIE("Film", "movie"),
+    OVA("OVA", "ova"),
+    ONA("ONA", "ona"),
+}
+
+@Serializable
+data class GenreItem(
+    val id: Int,
+    val name: String,
+)
+
+@Serializable
+data class TrackedNotificationPrefs(
+    val explicitlyEnabledKeys: Set<String> = emptySet(),
+    val explicitlyMutedKeys: Set<String> = emptySet(),
+    val discoveredSequelKeys: Set<String> = emptySet(),
+)
+
+data class AnimeDetailWithRelated(
+    val anime: AnimeItem,
+    val relatedAnimes: List<AnimeItem> = emptyList(),
+)
+
+data class DiscoveredSequel(
+    val parentAnime: AnimeItem,
+    val newSeason: AnimeItem,
+)
+
 enum class AnimeStatus(val label: String) {
     ONGOING("In corso"),
     COMPLETED("Finito"),
@@ -350,11 +390,12 @@ data class UpdateInfo(
 
 @Serializable
 data class AppBackupData(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = 2,
     val exportedAt: Long = System.currentTimeMillis(),
     val settings: AppSettings = AppSettings(),
     val history: List<WatchHistoryEntry> = emptyList(),
     val favorites: List<AnimeItem> = emptyList(),
+    val trackedNotifications: TrackedNotificationPrefs = TrackedNotificationPrefs(),
 )
 
 fun formatTimeMs(ms: Long): String {

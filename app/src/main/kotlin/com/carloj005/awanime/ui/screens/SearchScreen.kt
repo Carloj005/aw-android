@@ -19,11 +19,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Search
@@ -32,6 +35,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -42,6 +46,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +63,8 @@ import coil.compose.AsyncImage
 import com.carloj005.awanime.data.model.AnimeItem
 import com.carloj005.awanime.data.model.AnimeStatus
 import com.carloj005.awanime.data.model.SearchFilter
+import com.carloj005.awanime.data.model.SearchSortOrder
+import com.carloj005.awanime.data.model.SearchTypeFilter
 import com.carloj005.awanime.ui.SearchUiState
 import com.carloj005.awanime.ui.components.BadgePill
 import com.carloj005.awanime.ui.components.ErrorRetryBox
@@ -70,15 +77,29 @@ import com.carloj005.awanime.ui.theme.StarAmber
 @Composable
 fun SearchScreen(
     state: SearchUiState,
+    onEnsureGenresLoaded: () -> Unit,
     onQueryChange: (String) -> Unit,
     onFilterChange: (SearchFilter) -> Unit,
+    onTypeFilterChange: (SearchTypeFilter) -> Unit,
+    onSortOrderChange: (SearchSortOrder) -> Unit,
+    onSelectGenre: (Int?) -> Unit,
+    onClearFilters: () -> Unit,
     onSearchSubmit: (String) -> Unit,
     onClearRecent: () -> Unit,
+    onPickRandomAnime: () -> Unit,
     onAnimeClick: (AnimeItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val cs = MaterialTheme.colorScheme
+
+    LaunchedEffect(Unit) {
+        onEnsureGenresLoaded()
+    }
+
+    val selectedGenreName = remember(state.genres, state.selectedGenreId) {
+        state.genres.firstOrNull { it.id == state.selectedGenreId }?.name
+    }
 
     val filteredResults = remember(state.results, state.filter) {
         when (state.filter) {
@@ -90,24 +111,49 @@ fun SearchScreen(
         }
     }
 
+    val hasAnyActiveFilter = state.selectedGenreId != null ||
+        state.typeFilter != SearchTypeFilter.ALL ||
+        state.filter != SearchFilter.ALL ||
+        state.sortOrder != SearchSortOrder.CHRONOLOGICAL
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(cs.background)
             .padding(top = 12.dp),
     ) {
-        Text(
-            text = "Cerca Anime",
-            color = cs.onBackground,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.ExtraBold,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Cerca Anime",
+                color = cs.onBackground,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.ExtraBold,
+            )
+            FilledTonalButton(
+                onClick = {
+                    keyboard?.hide()
+                    onPickRandomAnime()
+                },
+                shape = CircleShape,
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                modifier = Modifier.height(36.dp),
+            ) {
+                Icon(Icons.Rounded.Casino, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Sorprendimi", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
 
         OutlinedTextField(
             value = state.query,
             onValueChange = onQueryChange,
-            placeholder = { Text("Es. JoJo, Dragon Ball, Solo Leveling...", color = cs.onSurfaceVariant) },
+            placeholder = { Text("Es. aot, jjk, csm, Solo Leveling...", color = cs.onSurfaceVariant) },
             leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null, tint = cs.primary) },
             trailingIcon = {
                 if (state.query.isNotEmpty()) {
@@ -139,18 +185,48 @@ fun SearchScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         )
 
-        if (state.hasSearched && state.results.isNotEmpty()) {
+        state.expandedAliasHint?.let { alias ->
+            Text(
+                text = "Sigla riconosciuta → \"$alias\"",
+                color = cs.primary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+            )
+        }
+
+        if (state.hasSearched) {
+            // Riga 1: Lingua / Stato + Tipo + Genere attivo
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(bottom = 6.dp),
+                modifier = Modifier.padding(bottom = 4.dp),
             ) {
+                if (selectedGenreName != null) {
+                    item {
+                        FilterChip(
+                            selected = true,
+                            onClick = { onSelectGenre(null) },
+                            label = { Text(selectedGenreName, fontWeight = FontWeight.Bold, fontSize = 12.sp) },
+                            trailingIcon = {
+                                Icon(Icons.Rounded.Close, contentDescription = "Rimuovi genere", modifier = Modifier.size(15.dp))
+                            },
+                            shape = CircleShape,
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = cs.tertiaryContainer,
+                                selectedLabelColor = cs.onTertiaryContainer,
+                                selectedTrailingIconColor = cs.onTertiaryContainer,
+                            ),
+                            border = null,
+                        )
+                    }
+                }
                 items(SearchFilter.entries) { filter ->
                     val selected = state.filter == filter
                     FilterChip(
                         selected = selected,
                         onClick = { onFilterChange(filter) },
-                        label = { Text(filter.label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium) },
+                        label = { Text(filter.label, fontSize = 12.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium) },
                         shape = CircleShape,
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = cs.primaryContainer,
@@ -161,12 +237,70 @@ fun SearchScreen(
                         border = null,
                     )
                 }
+                items(SearchTypeFilter.entries.filter { it != SearchTypeFilter.ALL }) { type ->
+                    val selected = state.typeFilter == type
+                    FilterChip(
+                        selected = selected,
+                        onClick = {
+                            onTypeFilterChange(if (selected) SearchTypeFilter.ALL else type)
+                        },
+                        label = { Text(type.label, fontSize = 12.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium) },
+                        shape = CircleShape,
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = cs.secondaryContainer,
+                            selectedLabelColor = cs.onSecondaryContainer,
+                            containerColor = cs.surfaceContainerLow,
+                            labelColor = cs.onSurfaceVariant,
+                        ),
+                        border = null,
+                    )
+                }
+            }
+
+            // Riga 2: Ordinamento (Cronologico / Voto / Recenti / Popolari)
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 6.dp),
+            ) {
+                items(SearchSortOrder.entries) { order ->
+                    val selected = state.sortOrder == order
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onSortOrderChange(order) },
+                        label = {
+                            Text(
+                                text = order.label,
+                                fontSize = 11.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            )
+                        },
+                        shape = CircleShape,
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = cs.secondaryContainer,
+                            selectedLabelColor = cs.onSecondaryContainer,
+                            containerColor = cs.surfaceContainerLow,
+                            labelColor = cs.onSurfaceVariant,
+                        ),
+                        border = null,
+                    )
+                }
+                if (hasAnyActiveFilter) {
+                    item {
+                        TextButton(
+                            onClick = onClearFilters,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        ) {
+                            Text("Reset filtri", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
         }
 
         when {
             state.isLoading -> {
-                LoadingPlaceholderBox(text = "Ricerca in corso (ordine cronologico)...")
+                LoadingPlaceholderBox(text = "Ricerca in corso...")
             }
 
             state.error != null -> {
@@ -177,20 +311,37 @@ fun SearchScreen(
 
             state.hasSearched && filteredResults.isEmpty() -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = if (state.results.isEmpty()) {
-                            "Nessun risultato trovato per \"${state.query}\""
-                        } else {
-                            "Nessun risultato con il filtro \"${state.filter.label}\""
-                        },
-                        color = cs.onSurfaceVariant,
-                        fontSize = 15.sp,
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(24.dp),
+                    ) {
+                        Text(
+                            text = if (state.results.isEmpty()) {
+                                "Nessun risultato trovato"
+                            } else {
+                                "Nessun risultato con il filtro \"${state.filter.label}\""
+                            },
+                            color = cs.onSurfaceVariant,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        if (hasAnyActiveFilter) {
+                            Spacer(Modifier.height(10.dp))
+                            FilledTonalButton(onClick = onClearFilters, shape = CircleShape) {
+                                Text("Rimuovi filtri")
+                            }
+                        }
+                    }
                 }
             }
 
             !state.hasSearched -> {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                ) {
                     if (state.recentQueries.isNotEmpty()) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -232,26 +383,83 @@ fun SearchScreen(
                                 )
                             }
                         }
-                        Spacer(Modifier.height(20.dp))
+                        Spacer(Modifier.height(16.dp))
                     }
+
+                    // Esplora per formato (TV / Film / OVA / ONA)
+                    Text(
+                        text = "Esplora per formato",
+                        color = cs.onSurfaceVariant,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(bottom = 16.dp),
+                    ) {
+                        items(SearchTypeFilter.entries.filter { it != SearchTypeFilter.ALL }) { type ->
+                            AssistChip(
+                                onClick = {
+                                    keyboard?.hide()
+                                    onTypeFilterChange(type)
+                                },
+                                label = { Text(type.label, fontWeight = FontWeight.SemiBold) },
+                                shape = CircleShape,
+                                colors = AssistChipDefaults.assistChipColors(containerColor = cs.secondaryContainer, labelColor = cs.onSecondaryContainer),
+                                border = null,
+                            )
+                        }
+                    }
+
+                    // Esplora per genere (caricato dal catalogo reale di AnimeUnity)
+                    if (state.genres.isNotEmpty()) {
+                        Text(
+                            text = "Esplora per genere",
+                            color = cs.onSurfaceVariant,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(bottom = 8.dp),
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(bottom = 16.dp),
+                        ) {
+                            state.genres.forEach { genre ->
+                                AssistChip(
+                                    onClick = {
+                                        keyboard?.hide()
+                                        onSelectGenre(genre.id)
+                                    },
+                                    label = { Text(genre.name, fontSize = 12.sp, color = cs.onSurface) },
+                                    shape = CircleShape,
+                                    colors = AssistChipDefaults.assistChipColors(containerColor = cs.surfaceContainer),
+                                    border = null,
+                                )
+                            }
+                        }
+                    }
+
                     Card(
                         shape = RoundedCornerShape(20.dp),
                         colors = CardDefaults.cardColors(containerColor = cs.surfaceContainerLow),
                     ) {
                         Text(
-                            text = "Suggerimento: la ricerca tollera anche errori di battitura (es. \"jojo steal ball run\") e ordina automaticamente tutte le stagioni dalla prima all'ultima.",
+                            text = "Suggerimento: puoi cercare anche con sigle (es. \"aot\", \"jjk\", \"csm\", \"hxh\", \"sbr\"), con errori di battitura o filtrando direttamente per genere, formato e voto ★.",
                             color = cs.onSurfaceVariant,
                             fontSize = 13.sp,
                             lineHeight = 19.sp,
                             modifier = Modifier.padding(16.dp),
                         )
                     }
+                    Spacer(Modifier.height(16.dp))
                 }
             }
 
             else -> {
                 Text(
-                    text = "${filteredResults.size} risultati trovati (in ordine cronologico)",
+                    text = "${filteredResults.size} risultati (${state.sortOrder.label.lowercase()})",
                     color = cs.onSurfaceVariant,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
