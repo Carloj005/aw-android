@@ -66,7 +66,7 @@ All source files live under `app/src/main/kotlin/com/carloj005/awanime/`:
 
 ### Publishing a new release (`vX.Y.Z`)
 1. Bump `versionCode` (+1) and `versionName` (`"X.Y.Z"`) in `app/build.gradle.kts`.
-2. Update changelog / fallback version in `README.md`, `docs/index.html`, and `docs/app.js`.
+2. Update changelog (`## Novità vX.Y.Z ...` section in `README.md`, automatically extracted as the GitHub Release body by `.github/workflows/release.yml`) and fallback version in `docs/index.html` and `docs/app.js`.
 3. Run `./gradlew testDebugUnitTest assembleRelease --no-daemon` (0 test failures, `lintVitalRelease` clean).
 4. Commit to `main`, create annotated tag `git tag -a vX.Y.Z -m "..."`, and push `git push origin main vX.Y.Z`.
 5. Wait for GitHub Actions workflows `Build & Publish Android Release APK`, `Android CI`, and `pages build and deployment` to finish with `success`, and confirm `releases/latest` includes both `AW-Anime-vX.Y.Z.apk` (signed `CN=AW Anime`) and `AW-Anime-vX.Y.Z.apk.sha256`.

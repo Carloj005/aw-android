@@ -77,8 +77,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -95,6 +98,7 @@ import com.carloj005.awanime.data.model.ThemeMode
 import com.carloj005.awanime.data.model.formatBytes
 import com.carloj005.awanime.data.network.SearchUtils
 import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
+import com.carloj005.awanime.data.update.AppUpdater
 import com.carloj005.awanime.ui.AppViewModel
 import com.carloj005.awanime.ui.RandomAnimeUiState
 import com.carloj005.awanime.ui.UpdateUiState
@@ -893,11 +897,53 @@ private fun UpdateDialog(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Spacer(Modifier.height(10.dp))
-                Text(
-                    text = info.changelog,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                val entries = remember(info.changelog, info.tagName) {
+                    AppUpdater.parseChangelogEntries(info.changelog, info.tagName)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    entries.forEach { entry ->
+                        if (entry.isSectionHeader) {
+                            Text(
+                                text = entry.text,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.Top,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    text = "•",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                Text(
+                                    text = buildAnnotatedString {
+                                        if (!entry.title.isNullOrBlank()) {
+                                            withStyle(
+                                                SpanStyle(
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                )
+                                            ) {
+                                                append(entry.title)
+                                                if (entry.text.isNotBlank()) append(": ")
+                                            }
+                                        }
+                                        append(entry.text)
+                                    },
+                                    fontSize = 13.sp,
+                                    lineHeight = 18.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
                 if (state.isDownloading) {
                     Spacer(Modifier.height(14.dp))
                     LinearProgressIndicator(

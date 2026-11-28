@@ -8,6 +8,7 @@ import com.carloj005.awanime.data.model.TrackedNotificationPrefs
 import com.carloj005.awanime.data.network.SearchUtils
 import com.carloj005.awanime.data.notifications.SequelTracker
 import com.carloj005.awanime.data.storage.TrackedNotificationsRepository
+import com.carloj005.awanime.data.update.AppUpdater
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -208,5 +209,29 @@ class V140FeaturesTest {
         assertTrue(body.contains("AW Anime v1.4.0 (build 10)"))
         assertTrue(body.contains("Android**: 15 (API 35)"))
         assertTrue(body.contains("Pixel 9"))
+    }
+
+    @Test
+    fun appUpdater_parsesReleaseNotesStrippingFullChangelogLinksAndRawMarkdown() {
+        val rawGitHubAutoNotes = """
+            ## What's Changed
+            **Full Changelog**: https://github.com/Carloj005/aw-android/compare/v1.3.2...v1.4.0
+        """.trimIndent()
+        val fallbackEntries = AppUpdater.parseChangelogEntries(rawGitHubAutoNotes, "v1.4.0")
+        assertEquals(1, fallbackEntries.size)
+        assertFalse(fallbackEntries[0].text.contains("Full Changelog", ignoreCase = true))
+        assertTrue(fallbackEntries[0].text.contains("v1.4.0"))
+
+        val richNotes = """
+            - **Calendario Personalizzato**: mostra solo gli anime seguiti con campanella per singolo titolo.
+            - **Fix Suite TV**: apre direttamente `com.nicolasbordeaux.suitetv`.
+            **Full Changelog**: https://github.com/Carloj005/aw-android/compare/v1.3.2...v1.4.0
+        """.trimIndent()
+        val entries = AppUpdater.parseChangelogEntries(richNotes, "v1.4.0")
+        assertEquals(2, entries.size)
+        assertEquals("Calendario Personalizzato", entries[0].title)
+        assertEquals("mostra solo gli anime seguiti con campanella per singolo titolo.", entries[0].text)
+        assertEquals("Fix Suite TV", entries[1].title)
+        assertEquals("apre direttamente com.nicolasbordeaux.suitetv.", entries[1].text)
     }
 }

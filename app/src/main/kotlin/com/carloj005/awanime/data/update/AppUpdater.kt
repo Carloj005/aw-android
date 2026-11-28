@@ -95,13 +95,14 @@ class AppUpdater(
                 ?.takeIf { isTrustedGitHubDownloadUrl(it) }
 
             val sizeBytes = (apkAsset["size"] as? JsonPrimitive)?.longOrNull ?: 0L
-            val changelog = (root["body"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val rawBody = (root["body"] as? JsonPrimitive)?.content?.trim().orEmpty()
+            val changelog = cleanReleaseNotes(rawBody, tagName)
             val htmlUrl = (root["html_url"] as? JsonPrimitive)?.content.orEmpty()
 
             UpdateInfo(
                 versionName = remoteVersion,
                 tagName = tagName,
-                changelog = changelog.ifBlank { "Nuova versione $tagName disponibile." },
+                changelog = changelog,
                 downloadUrl = downloadUrl,
                 sha256Url = sha256Url,
                 sizeBytes = sizeBytes,
@@ -296,8 +297,93 @@ class AppUpdater(
         context.startActivity(intent)
     }
 
+    data class ChangelogEntry(
+        val title: String? = null,
+        val text: String,
+        val isSectionHeader: Boolean = false,
+    )
+
     companion object {
         private val SHA256_HEX_REGEX = Regex("^[a-f0-9]{64}$")
+        private val FULL_CHANGELOG_LINE_REGEX = Regex(
+            """^\*{0,2}\s*full\s+changelog\s*\*{0,2}\s*:\s*https?://\S+\s*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val MARKDOWN_LINK_REGEX = Regex("""\[([^\]]+)\]\((https?://[^)]+)\)""")
+        private val BOLD_LEAD_REGEX = Regex("""^\*\*(.+?)\*\*\s*(?:[:—–-]\s*)?(.*)$""")
+        private val COLON_LEAD_REGEX = Regex("""^([^:\n]{2,56}):\s+(.+)$""")
+        private val INLINE_MARKDOWN_REGEX = Regex("""(\*\*|__|\*|`)""")
+
+        fun cleanReleaseNotes(rawBody: String, tagName: String): String {
+            val entries = parseChangelogEntries(rawBody, tagName)
+            return entries.joinToString("\n") { entry ->
+                when {
+                    entry.isSectionHeader -> entry.text
+                    !entry.title.isNullOrBlank() && entry.text.isNotBlank() -> "• ${entry.title}: ${entry.text}"
+                    !entry.title.isNullOrBlank() -> "• ${entry.title}"
+                    else -> "• ${entry.text}"
+                }
+            }
+        }
+
+        fun parseChangelogEntries(rawBody: String, tagName: String): List<ChangelogEntry> {
+            val cleaned = mutableListOf<ChangelogEntry>()
+            for (rawLine in rawBody.lines()) {
+                val trimmed = rawLine.trim()
+                if (trimmed.isEmpty()) continue
+                if (FULL_CHANGELOG_LINE_REGEX.matches(trimmed)) continue
+                if (trimmed.equals("## What's Changed", ignoreCase = true)) continue
+
+                val withoutLinks = MARKDOWN_LINK_REGEX.replace(trimmed, "$1")
+
+                if (withoutLinks.startsWith("#")) {
+                    val heading = INLINE_MARKDOWN_REGEX.replace(withoutLinks.trimStart('#').trim(), "").trim()
+                    if (heading.isNotBlank()) {
+                        cleaned.add(ChangelogEntry(text = heading, isSectionHeader = true))
+                    }
+                    continue
+                }
+
+                val bulletBody = when {
+                    withoutLinks.startsWith("- ") || withoutLinks.startsWith("* ") || withoutLinks.startsWith("• ") ->
+                        withoutLinks.drop(2).trim()
+                    else -> withoutLinks
+                }
+                if (bulletBody.isEmpty()) continue
+
+                val boldMatch = BOLD_LEAD_REGEX.matchEntire(bulletBody)
+                if (boldMatch != null) {
+                    val lead = INLINE_MARKDOWN_REGEX.replace(boldMatch.groupValues[1], "").trim().trimEnd(':')
+                    val rest = INLINE_MARKDOWN_REGEX.replace(boldMatch.groupValues[2], "").trim()
+                    if (lead.isNotBlank() || rest.isNotBlank()) {
+                        cleaned.add(
+                            ChangelogEntry(
+                                title = lead.takeIf { it.isNotBlank() },
+                                text = rest,
+                            )
+                        )
+                    }
+                } else {
+                    val plain = INLINE_MARKDOWN_REGEX.replace(bulletBody, "").trim()
+                    val colonMatch = COLON_LEAD_REGEX.matchEntire(plain)
+                    if (colonMatch != null) {
+                        cleaned.add(
+                            ChangelogEntry(
+                                title = colonMatch.groupValues[1].trim(),
+                                text = colonMatch.groupValues[2].trim(),
+                            )
+                        )
+                    } else if (plain.isNotBlank()) {
+                        cleaned.add(ChangelogEntry(text = plain))
+                    }
+                }
+            }
+
+            if (cleaned.isEmpty()) {
+                return listOf(ChangelogEntry(text = "Nuova versione $tagName disponibile con miglioramenti e correzioni."))
+            }
+            return cleaned
+        }
 
         fun isTrustedGitHubHost(rawHost: String): Boolean =
             UrlSecurityPolicy.isTrustedGitHubHost(rawHost)
